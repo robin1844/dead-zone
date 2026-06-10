@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Dead Zone</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: #111;
+    color: #eee;
+    font-family: Arial, sans-serif;
+    height: 100vh;
+    overflow: hidden;
+    touch-action: none;
+  }
+
+  /* ── Start screen ── */
+  #start-screen {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    gap: 2rem;
+    padding: 2rem;
+  }
+
+  #game-title {
+    font-size: 3.5rem;
+    font-weight: 900;
+    color: #c00;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    text-align: center;
+  }
+
+  #start-btn {
+    font-size: 2rem;
+    padding: 1.2rem 3rem;
+    background: #c00;
+    color: #fff;
+    border: none;
+    border-radius: 14px;
+    cursor: pointer;
+    min-width: 220px;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  #start-instructions {
+    font-size: 1rem;
+    color: #888;
+    text-align: center;
+    line-height: 1.6;
+    max-width: 300px;
+  }
+
+  /* ── Game screen ── */
+  #game-screen {
+    display: none;
+    height: 100vh;
+    position: relative;
+  }
+
+  #hud {
+    position: absolute;
+    top: 20px;
+    left: 0;
+    right: 0;
+    text-align: center;
+    pointer-events: none;
+    line-height: 1.8;
+  }
+
+  #ammo-display { font-size: 1.4rem; color: #ff0; }
+  #score-display { font-size: 1.1rem; color: #aaa; }
+  #zombie-count  { font-size: 1rem;   color: #c66; }
+
+  /* Full-screen tap target */
+  #tap-area {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: crosshair;
+  }
+
+  #tap-hint {
+    font-size: 1rem;
+    color: #444;
+    text-align: center;
+    line-height: 1.8;
+    pointer-events: none;
+  }
+
+  #feedback {
+    position: absolute;
+    bottom: 60px;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-size: 2rem;
+    font-weight: bold;
+    color: #ff0;
+    pointer-events: none;
+    min-height: 2.5rem;
+    transition: opacity 0.3s;
+  }
+
+  /* Visually hidden - VO reads it, sighted users don't see it */
+  #vo-alert {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    color: #111;       /* same as background */
+    background: #111;
+    font-size: 1px;
+  }
+</style>
+</head>
+<body>
+
+<!-- ── Start screen ── -->
+<div id="start-screen">
+  <h1 id="game-title">Dead Zone</h1>
+  <button id="start-btn">Start Game</button>
+  <p id="start-instructions">
+    Turn your phone to face the zombies.<br>
+    Tap to shoot &bull; Hold for rapid fire<br>
+    Double-tap to reload &bull; Triple-tap to exit
+  </p>
+</div>
+
+<!-- ── Game screen ── -->
+<div id="game-screen" role="application" aria-label="Dead Zone game in progress">
+  <div id="hud" aria-hidden="true">
+    <div id="ammo-display">Ammo: 6</div>
+    <div id="score-display">Score: 0</div>
+    <div id="zombie-count">Zombies: 0</div>
+  </div>
+
+  <div id="tap-area">
+    <div id="tap-hint">
+      Tap &nbsp;&mdash; shoot<br>
+      Hold &mdash; rapid fire<br>
+      2&times; tap &mdash; reload<br>
+      3&times; tap &mdash; exit
+    </div>
+  </div>
+
+  <div id="feedback" aria-live="polite" aria-atomic="true"></div>
+
+  <!-- VoiceOver alert: invisible to sighted users, announced immediately by VO -->
+  <div id="vo-alert" aria-live="assertive" aria-atomic="true"></div>
+</div>
+
+<script>
+'use strict';
+
+// ── Audio context (created on user gesture) ────────────────────
+let audioCtx = null;
+function ctx() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return audioCtx;
+}
+
+// ── Distortion curve helper ────────────────────────────────────
+function makeDistCurve(amount) {
+  const n = 256, curve = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const x = (i * 2) / n - 1;
+    curve[i] = ((Math.PI + amount) * x) / (Math.PI + amount * Math.abs(x));
+  }
+  return curve;
+}
+
+// ── Spatial panner ─────────────────────────────────────────────
+function createPanner() {
+  const p = ctx().createPanner();
+  p.panningModel  = 'HRTF';
+  p.distanceModel = 'inverse';
+  p.refDistance   = 1;
+  p.maxDistance   = 25;
+  p.rolloffFactor = 1.2;
+  p.connect(ctx().destination);
+  return p;
+}
+
+function setPannerPos(panner, relDeg, distance) {
+  const rad = (relDeg * Math.PI) / 180;
+  const t   = ctx().currentTime;
+  panner.positionX.setValueAtTime( Math.sin(rad) * distance, t);
+  panner.positionY.setValueAtTime( 0,                        t);
+  panner.positionZ.setValueAtTime(-Math.cos(rad) * distance, t);
+}
+
+// ── Sound: gunshot (centre, no spatial) ───────────────────────
+function playGunshot() {
+  const c   = ctx();
+  const buf = c.createBuffer(1, c.sampleRate * 0.15, c.sampleRate);
+  const d   = buf.getChannelData(0);
+  for (let i = 0; i < d.length; i++) {
+    d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 3);
+  }
+  const src  = c.createBufferSource();
+  src.buffer = buf;
+  const gain = c.createGain();
+  gain.gain.setValueAtTime(2.5, c.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.01, c.currentTime + 0.15);
+  const filt = c.createBiquadFilter();
+  filt.type = 'bandpass';
+  filt.frequency.value = 900;
+  filt.Q.value = 0.4;
+  src.connect(filt);
+  filt.connect(gain);
+  gain.connect(c.destination);
+  src.start();
+}
+
+// ── Sound: empty click ─────────────────────────────────────────
+function playDryFire() {
+  const c    = ctx();
+  const osc  = c.createOscillator();
+  osc.type   = 'square';
+  osc.frequency.value = 1800;
+  const gain = c.createGain();
+  gain.gain.setValueAtTime(0.3, c.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.04);
+  osc.connect(gain);
+  gain.connect(c.destination);
+  osc.start();
+  osc.stop(c.currentTime + 0.04);
+}
+
+// ── Sound: reload ──────────────────────────────────────────────
+function playReloadSound() {
+  const c = ctx();
+  [0, 0.18, 0.55].forEach((t, i) => {
+    const buf = c.createBuffer(1, c.sampleRate * 0.06, c.sampleRate);
+    const d   = buf.getChannelData(0);
+    for (let j = 0; j < d.length; j++) {
+      d[j] = (Math.random() * 2 - 1) * Math.pow(1 - j / d.length, 4);
+    }
+    const src  = c.createBufferSource();
+    src.buffer = buf;
+    const gain = c.createGain();
+    gain.gain.value = 1.2 + i * 0.3;
+    src.connect(gain);
+    gain.connect(c.destination);
+    src.start(c.currentTime + t);
+  });
+}
+
+// ── Sound: zombie groan (spatial) ─────────────────────────────
+function playGroan(panner, pitch) {
+  const c   = ctx();
+  const osc = c.createOscillator();
+  osc.type  = 'sawtooth';
+  osc.frequency.setValueAtTime(pitch,           c.currentTime);
+  osc.frequency.setValueAtTime(pitch * 0.82,    c.currentTime + 0.25);
+  osc.frequency.setValueAtTime(pitch,           c.currentTime + 0.55);
+  const filt = c.createBiquadFilter();
+  filt.type  = 'lowpass';
+  filt.frequency.value = Math.min(pitch * 3, 600);
+  const dist  = c.createWaveShaper();
+  dist.curve  = makeDistCurve(150);
+  const gain  = c.createGain();
+  gain.gain.setValueAtTime(0,   c.currentTime);
+  gain.gain.linearRampToValueAtTime(0.9, c.currentTime + 0.12);
+  gain.gain.linearRampToValueAtTime(0.7, c.currentTime + 0.45);
+  gain.gain.linearRampToValueAtTime(0,   c.currentTime + 0.8);
+  osc.connect(filt);
+  filt.connect(dist);
+  dist.connect(gain);
+  gain.connect(panner);
+  osc.start();
+  osc.stop(c.currentTime + 0.85);
+}
+
+// ── Sound: zombie hit ──────────────────────────────────────────
+function playHit(panner, pitch) {
+  const c   = ctx();
+  const osc = c.createOscillator();
+  osc.type  = 'sawtooth';
+  osc.frequency.setValueAtTime(pitch * 1.3, c.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(pitch * 0.5, c.currentTime + 0.25);
+  const dist = c.createWaveShaper();
+  dist.curve = makeDistCurve(200);
+  const gain = c.createGain();
+  gain.gain.setValueAtTime(1.2, c.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.01, c.currentTime + 0.25);
+  osc.connect(dist);
+  dist.connect(gain);
+  gain.connect(panner);
+  osc.start();
+  osc.stop(c.currentTime + 0.28);
+}
+
+// ── Sound: zombie death ────────────────────────────────────────
+function playDeath(panner, pitch) {
+  const c   = ctx();
+  const osc = c.createOscillator();
+  osc.type  = 'sawtooth';
+  osc.frequency.setValueAtTime(pitch,      c.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(pitch * 0.2, c.currentTime + 1.0);
+  const dist = c.createWaveShaper();
+  dist.curve = makeDistCurve(400);
+  const gain = c.createGain();
+  gain.gain.setValueAtTime(1.8, c.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.01, c.currentTime + 1.0);
+  osc.connect(dist);
+  dist.connect(gain);
+  gain.connect(panner);
+  osc.start();
+  osc.stop(c.currentTime + 1.05);
+}
+
+// ── Sound: game-over sting ─────────────────────────────────────
+function playGameOverSting() {
+  const c = ctx();
+  [220, 185, 147, 110].forEach((freq, i) => {
+    const osc  = c.createOscillator();
+    osc.type   = 'sawtooth';
+    osc.frequency.value = freq;
+    const gain = c.createGain();
+    gain.gain.setValueAtTime(0.6, c.currentTime + i * 0.22);
+    gain.gain.exponentialRampToValueAtTime(0.001, c.currentTime + i * 0.22 + 0.5);
+    osc.connect(gain);
+    gain.connect(c.destination);
+    osc.start(c.currentTime + i * 0.22);
+    osc.stop(c.currentTime  + i * 0.22 + 0.55);
+  });
+}
+
+// ── Speech: "Entering the zone" placeholder ────────────────────
+function speakIntro(onDone) {
+  if (!window.speechSynthesis) { onDone(); return; }
+  window.speechSynthesis.cancel();
+  const utt   = new SpeechSynthesisUtterance('Entering the zone. Stay alert.');
+  utt.rate    = 0.75;
+  utt.pitch   = 0.3;
+  utt.volume  = 1;
+  utt.onend   = onDone;
+  utt.onerror = onDone;
+  window.speechSynthesis.speak(utt);
+}
+
+function speakGameOver(score) {
+  if (!window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+  const utt  = new SpeechSynthesisUtterance(`Game over. You took down ${score} zombie${score !== 1 ? 's' : ''}.`);
+  utt.rate   = 0.8;
+  utt.pitch  = 0.4;
+  utt.volume = 1;
+  window.speechSynthesis.speak(utt);
+}
+
+// ── Zombie types ───────────────────────────────────────────────
+const ZOMBIE_TYPES = [
+  { pitch: 185, hp: 1 },   // small / high-pitched
+  { pitch: 110, hp: 2 },   // medium
+  { pitch:  62, hp: 3 },   // large / low-pitched
+];
+
+// ── Game state ─────────────────────────────────────────────────
+const MAX_AMMO    = 6;
+const MAX_ZOMBIES = 3;
+const AIM_WIDTH   = 35;    // degrees either side counts as "in sights"
+
+let playerHeading  = 0;
+let zombies        = [];
+let ammo           = MAX_AMMO;
+let score          = 0;
+let gameRunning    = false;
+let advanceTimer   = null;
+
+// ── Spawn zombie ───────────────────────────────────────────────
+function spawnZombie() {
+  if (!gameRunning || zombies.length >= MAX_ZOMBIES) return;
+
+  const type     = ZOMBIE_TYPES[Math.floor(Math.random() * ZOMBIE_TYPES.length)];
+  const angle    = Math.random() * 360;
+  const distance = 12 + Math.random() * 6;
+  const panner   = createPanner();
+  setPannerPos(panner, (angle - playerHeading + 360) % 360, distance);
+
+  const z = {
+    id:           Math.random(),
+    angle,
+    distance,
+    hp:           type.hp,
+    pitch:        type.pitch,
+    panner,
+    groanTimer:   null,
+  };
+
+  const baseInterval = 2200 + Math.random() * 1800;
+  z.groanTimer = setInterval(() => {
+    if (gameRunning) playGroan(z.panner, z.pitch);
+  }, baseInterval);
+  setTimeout(() => { if (gameRunning) playGroan(z.panner, z.pitch); }, 400);
+
+  zombies.push(z);
+  updateHUD();
+}
+
+function removeZombie(z) {
+  clearInterval(z.groanTimer);
+  z.panner.disconnect();
+  zombies = zombies.filter(x => x.id !== z.id);
+  updateHUD();
+}
+
+// ── Device orientation ─────────────────────────────────────────
+function onOrientation(e) {
+  if (e.alpha !== null) {
+    playerHeading = e.alpha;
+    zombies.forEach(z => {
+      const rel = ((z.angle - playerHeading) + 360) % 360;
+      setPannerPos(z.panner, rel, z.distance);
+    });
+  }
+}
+
+async function requestOrientation() {
+  if (typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function') {
+    try {
+      const state = await DeviceOrientationEvent.requestPermission();
+      if (state === 'granted') window.addEventListener('deviceorientation', onOrientation);
+    } catch (e) { /* permission denied or not iOS */ }
+  } else {
+    window.addEventListener('deviceorientation', onOrientation);
+  }
+}
+
+// ── Game loop: zombies advance ─────────────────────────────────
+function tick() {
+  if (!gameRunning) return;
+  zombies.forEach(z => {
+    z.distance -= 0.06;
+    const rel = ((z.angle - playerHeading) + 360) % 360;
+    setPannerPos(z.panner, rel, z.distance);
+    if (z.distance <= 1.2) triggerGameOver();
+  });
+}
+
+// ── Shooting logic ─────────────────────────────────────────────
+function getTarget() {
+  let best = null, bestDiff = Infinity;
+  zombies.forEach(z => {
+    let rel  = ((z.angle - playerHeading) + 360) % 360;
+    let diff = rel > 180 ? 360 - rel : rel;
+    if (diff < AIM_WIDTH && diff < bestDiff) { bestDiff = diff; best = z; }
+  });
+  return best;
+}
+
+function shoot() {
+  if (!gameRunning) return;
+  if (ammo <= 0) { playDryFire(); showFeedback('No ammo - reload!'); return; }
+  ammo--;
+  updateHUD();
+  playGunshot();
+  const t = getTarget();
+  if (t) {
+    t.hp--;
+    if (t.hp <= 0) {
+      playDeath(t.panner, t.pitch);
+      score++;
+      showFeedback('Zombie down!');
+      removeZombie(t);
+      setTimeout(() => { if (gameRunning) spawnZombie(); }, 2000 + Math.random() * 2000);
+    } else {
+      playHit(t.panner, t.pitch);
+      showFeedback('Hit!');
+    }
+  } else {
+    showFeedback('Miss');
+  }
+  updateHUD();
+}
+
+function doReload() {
+  if (!gameRunning) return;
+  showFeedback('Reloading...');
+  playReloadSound();
+  setTimeout(() => {
+    ammo = MAX_AMMO;
+    updateHUD();
+    showFeedback('Ready!');
+  }, 900);
+}
+
+// ── Tap / hold / multi-tap detection ──────────────────────────
+const HOLD_MS       = 280;   // ms before hold fires
+const TAP_MAX_MS    = 250;   // max touch duration to count as tap
+const MULTI_WIN_MS  = 380;   // window to count a second/third tap
+
+let touchStart      = 0;
+let holdTimer       = null;
+let rapidTimer      = null;
+let tapCount        = 0;
+let multiTimer      = null;
+
+function onTouchStart(e) {
+  e.preventDefault();
+  touchStart = Date.now();
+  holdTimer  = setTimeout(() => {
+    holdTimer  = null;
+    rapidTimer = setInterval(shoot, 260);
+  }, HOLD_MS);
+}
+
+function onTouchEnd(e) {
+  e.preventDefault();
+  clearTimeout(holdTimer);
+  holdTimer = null;
+
+  if (rapidTimer) {
+    clearInterval(rapidTimer);
+    rapidTimer = null;
+    return;  // hold gesture handled - don't also count as tap
+  }
+
+  if (Date.now() - touchStart > TAP_MAX_MS) return; // slow press, ignore
+
+  tapCount++;
+  clearTimeout(multiTimer);
+
+  if (tapCount >= 3) {
+    tapCount = 0;
+    triggerExit();
+    return;
+  }
+
+  multiTimer = setTimeout(() => {
+    const n  = tapCount;
+    tapCount = 0;
+    if      (n === 1) shoot();
+    else if (n === 2) doReload();
+  }, MULTI_WIN_MS);
+}
+
+// ── UI helpers ─────────────────────────────────────────────────
+let fbTimer = null;
+function showFeedback(msg) {
+  const el      = document.getElementById('feedback');
+  el.textContent = msg;
+  clearTimeout(fbTimer);
+  fbTimer = setTimeout(() => { el.textContent = ''; }, 1600);
+}
+
+function updateHUD() {
+  document.getElementById('ammo-display').textContent  = `Ammo: ${ammo}`;
+  document.getElementById('score-display').textContent = `Score: ${score}`;
+  document.getElementById('zombie-count').textContent  = `Zombies: ${zombies.length}`;
+}
+
+// ── Game start / end ───────────────────────────────────────────
+function onStartPressed() {
+  // Wake AudioContext on user gesture
+  ctx().resume();
+
+  // Fire ARIA live region - VO reads this immediately; sighted users won't see it
+  const voEl = document.getElementById('vo-alert');
+  voEl.textContent = '';
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => { voEl.textContent = 'Turn off VoiceOver now'; });
+  });
+
+  // Switch to game screen after brief pause (lets VO announce its message)
+  setTimeout(() => {
+    document.getElementById('start-screen').style.display = 'none';
+    document.getElementById('game-screen').style.display  = 'block';
+    speakIntro(beginPlay);
+  }, 1600);
+}
+
+function beginPlay() {
+  gameRunning = true;
+  ammo  = MAX_AMMO;
+  score = 0;
+  zombies = [];
+  updateHUD();
+  requestOrientation();
+
+  spawnZombie();
+  setTimeout(spawnZombie, 1800);
+  setTimeout(spawnZombie, 3600);
+
+  advanceTimer = setInterval(tick, 200);
+}
+
+function triggerGameOver() {
+  if (!gameRunning) return;
+  gameRunning = false;
+  clearInterval(advanceTimer);
+  zombies.forEach(z => { clearInterval(z.groanTimer); z.panner.disconnect(); });
+  zombies = [];
+
+  playGameOverSting();
+  showFeedback(`GAME OVER  |  Score: ${score}`);
+  speakGameOver(score);
+
+  setTimeout(() => {
+    document.getElementById('game-screen').style.display  = 'none';
+    document.getElementById('start-screen').style.display = 'flex';
+    document.getElementById('feedback').textContent = '';
+  }, 5000);
+}
+
+function triggerExit() {
+  triggerGameOver();
+}
+
+// ── Wire up events ─────────────────────────────────────────────
+document.getElementById('start-btn').addEventListener('click', onStartPressed);
+
+const tapArea = document.getElementById('tap-area');
+tapArea.addEventListener('touchstart', onTouchStart, { passive: false });
+tapArea.addEventListener('touchend',   onTouchEnd,   { passive: false });
+
+// Desktop fallback (mouse)
+tapArea.addEventListener('mousedown', () => onTouchStart({ preventDefault() {} }));
+tapArea.addEventListener('mouseup',   () => onTouchEnd({ preventDefault() {} }));
+</script>
+</body>
+</html>
