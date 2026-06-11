@@ -163,7 +163,7 @@
 </div>
 
 <!-- ── Game screen ── -->
-<div id="game-screen" role="application" aria-label="Dead Zone game in progress">
+<div id="game-screen" aria-label="Dead Zone game in progress">
   <div id="hud" aria-hidden="true">
     <div id="ammo-display">Ammo: 6</div>
     <div id="score-display">Score: 0</div>
@@ -205,7 +205,9 @@ const audioBuffers = {};
 async function loadSounds() {
   const files = {
     gunshot:      'sounds/gunshot.mp3',
-    zombieHit:    'sounds/zombie_hit.ogg',
+    zombieHit:    'sounds/zombie_hit2.ogg',
+    zombieDeath:  'sounds/zombie_death.ogg',
+    zombieGroan:  'sounds/zombie_groan.mp3',
     reloadClick:  'sounds/reload_click.ogg',
     reloadLatch:  'sounds/reload_latch.ogg',
   };
@@ -341,57 +343,59 @@ function calcSpatialCutoff(relDeg) {
   return 18000 - 17200 * t;            // 18000 Hz front → 800 Hz back
 }
 
-// ── Sound: continuous zombie growl (started on spawn, stopped on death) ──
+// ── Sound: continuous zombie groan (looped file, pitch-shifted per type) ──
+// pitch values from ZOMBIE_TYPES map to playbackRate: 185→1.4, 110→1.0, 62→0.65
+function pitchToRate(pitch) {
+  if (pitch >= 160) return 1.4;
+  if (pitch >= 90)  return 1.0;
+  return 0.65;
+}
+
 function startGrowl(panner, pitch) {
   const c    = ctx();
-  const osc  = c.createOscillator();
-  osc.type   = 'sawtooth';
-  osc.frequency.value = pitch;
-
-  // Slow LFO to wobble the pitch
-  const lfo     = c.createOscillator();
-  lfo.type      = 'sine';
-  lfo.frequency.value = 0.8;
-  const lfoGain = c.createGain();
-  lfoGain.gain.value = pitch * 0.12;
-  lfo.connect(lfoGain);
-  lfoGain.connect(osc.frequency);
-
-  const staticFilt = c.createBiquadFilter();
-  staticFilt.type  = 'lowpass';
-  staticFilt.frequency.value = Math.min(pitch * 3, 700);
-
-  const dist = c.createWaveShaper();
-  dist.curve = makeDistCurve(150);
-
   const gain = c.createGain();
-  gain.gain.value = 0.75;
+  gain.gain.value = 0.9;
 
-  // Spatial filter: cutoff driven by relative angle (front=bright, back=muffled)
   const spatialFilt = c.createBiquadFilter();
   spatialFilt.type  = 'lowpass';
   spatialFilt.frequency.value = 18000;
   spatialFilt.Q.value = 0.7;
 
-  // Chain: osc → staticFilt → dist → gain → spatialFilt → panner → destination
-  osc.connect(staticFilt);
-  staticFilt.connect(dist);
-  dist.connect(gain);
   gain.connect(spatialFilt);
   spatialFilt.connect(panner);
 
-  lfo.start();
-  osc.start();
+  let src = null;
 
-  return { osc, lfo, gain, spatialFilt };
+  if (audioBuffers.zombieGroan) {
+    src = c.createBufferSource();
+    src.buffer       = audioBuffers.zombieGroan;
+    src.loop         = true;
+    src.playbackRate.value = pitchToRate(pitch);
+    src.connect(gain);
+    src.start();
+  } else {
+    // Synthesised fallback
+    const osc  = c.createOscillator();
+    osc.type   = 'sawtooth';
+    osc.frequency.value = pitch;
+    const filt = c.createBiquadFilter();
+    filt.type  = 'lowpass';
+    filt.frequency.value = Math.min(pitch * 3, 700);
+    const dist = c.createWaveShaper();
+    dist.curve = makeDistCurve(150);
+    osc.connect(filt); filt.connect(dist); dist.connect(gain);
+    osc.start();
+    src = osc;
+  }
+
+  return { src, gain, spatialFilt };
 }
 
 function stopGrowl(growl) {
   const t = ctx().currentTime;
   growl.gain.gain.setValueAtTime(growl.gain.gain.value, t);
-  growl.gain.gain.linearRampToValueAtTime(0, t + 0.15);
-  growl.osc.stop(t + 0.2);
-  growl.lfo.stop(t + 0.2);
+  growl.gain.gain.linearRampToValueAtTime(0, t + 0.3);
+  try { growl.src.stop(t + 0.35); } catch(e) {}
 }
 
 // ── Sound: zombie hit ──────────────────────────────────────────
@@ -427,6 +431,18 @@ function playHit(panner) {
 
 // ── Sound: zombie death ────────────────────────────────────────
 function playDeath(panner, pitch) {
+  if (audioBuffers.zombieDeath) {
+    const src  = ctx().createBufferSource();
+    src.buffer = audioBuffers.zombieDeath;
+    src.playbackRate.value = pitchToRate(pitch);
+    const gain = ctx().createGain();
+    gain.gain.value = 1.5;
+    src.connect(gain);
+    gain.connect(panner);
+    src.start();
+    return;
+  }
+  // Synthesised fallback
   const c   = ctx();
   const osc = c.createOscillator();
   osc.type  = 'sawtooth';
@@ -485,6 +501,104 @@ function speakGameOver(score) {
   utt.pitch  = 0.4;
   utt.volume = 1;
   window.speechSynthesis.speak(utt);
+}
+
+// ── Ambient fixed-position sounds ─────────────────────────────
+// Three anchors at fixed world angles help the player calibrate orientation.
+const AMBIENT_SOURCES = [
+  { angle: 60,  label: 'beep',  type: 'beep' },
+  { angle: 200, label: 'drip',  type: 'drip' },
+  { angle: 330, label: 'hum',   type: 'hum'  },
+];
+let ambientNodes = [];
+
+function startAmbient() {
+  AMBIENT_SOURCES.forEach(src => {
+    const panner = createPanner();
+    const relDeg = ((src.angle - playerHeading) + 360) % 360;
+    setPannerPos(panner, relDeg, 8); // fixed distance
+
+    if (src.type === 'hum') {
+      // Continuous low electrical hum
+      const c   = ctx();
+      const osc = c.createOscillator();
+      osc.type  = 'sine';
+      osc.frequency.value = 55;
+      const osc2 = c.createOscillator();
+      osc2.type  = 'sine';
+      osc2.frequency.value = 110;
+      const gain = c.createGain();
+      gain.gain.value = 0.12;
+      osc.connect(gain); osc2.connect(gain);
+      gain.connect(panner);
+      osc.start(); osc2.start();
+      ambientNodes.push({ panner, worldAngle: src.angle, nodes: [osc, osc2, gain] });
+
+    } else if (src.type === 'beep') {
+      // Periodic electronic beep
+      const gain = ctx().createGain();
+      gain.gain.value = 0.18;
+      gain.connect(panner);
+      function doBeep() {
+        if (!gameRunning) return;
+        const c   = ctx();
+        const osc = c.createOscillator();
+        osc.type  = 'sine';
+        osc.frequency.value = 880;
+        const g2  = c.createGain();
+        g2.gain.setValueAtTime(1, c.currentTime);
+        g2.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.12);
+        osc.connect(g2); g2.connect(gain);
+        osc.start(); osc.stop(c.currentTime + 0.15);
+        const node = { panner, worldAngle: src.angle, nodes: [gain], timer: setTimeout(doBeep, 1800 + Math.random() * 600) };
+        ambientNodes.push(node);
+      }
+      const beepNode = { panner, worldAngle: src.angle, nodes: [gain], timer: setTimeout(doBeep, 800) };
+      ambientNodes.push(beepNode);
+
+    } else if (src.type === 'drip') {
+      // Periodic water drip
+      const gain = ctx().createGain();
+      gain.gain.value = 0.22;
+      gain.connect(panner);
+      function doDrip() {
+        if (!gameRunning) return;
+        const c   = ctx();
+        const osc = c.createOscillator();
+        osc.type  = 'sine';
+        osc.frequency.setValueAtTime(1200, c.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(400, c.currentTime + 0.18);
+        const g2  = c.createGain();
+        g2.gain.setValueAtTime(1, c.currentTime);
+        g2.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.2);
+        osc.connect(g2); g2.connect(gain);
+        osc.start(); osc.stop(c.currentTime + 0.22);
+        setTimeout(doDrip, 2400 + Math.random() * 1200);
+      }
+      const dripNode = { panner, worldAngle: src.angle, nodes: [gain], timer: setTimeout(doDrip, 1200) };
+      ambientNodes.push(dripNode);
+    }
+  });
+}
+
+function stopAmbient() {
+  ambientNodes.forEach(n => {
+    clearTimeout(n.timer);
+    n.nodes.forEach(nd => { try { if (nd.stop) nd.stop(); nd.disconnect(); } catch(e){} });
+    n.panner.disconnect();
+  });
+  ambientNodes = [];
+}
+
+function updateAmbientPanners() {
+  // Called from onOrientation - update panner positions for fixed world angles
+  const seen = new Set();
+  ambientNodes.forEach(n => {
+    if (seen.has(n.worldAngle)) return;
+    seen.add(n.worldAngle);
+    const rel = ((n.worldAngle - playerHeading) + 360) % 360;
+    setPannerPos(n.panner, rel, 8);
+  });
 }
 
 // ── Zombie types ───────────────────────────────────────────────
@@ -551,6 +665,7 @@ function onOrientation(e) {
       const rel = ((z.angle - playerHeading) + 360) % 360;
       updateZombieAudio(z, rel);
     });
+    updateAmbientPanners();
   }
 }
 
@@ -745,6 +860,8 @@ function beginPlay() {
   zombies        = [];
   updateHUD();
 
+  startAmbient();
+
   spawnZombie();
   setTimeout(spawnZombie, 1800);
   setTimeout(spawnZombie, 3600);
@@ -758,6 +875,7 @@ function triggerGameOver() {
   clearInterval(advanceTimer);
   zombies.forEach(z => { stopGrowl(z.growl); z.panner.disconnect(); });
   zombies = [];
+  stopAmbient();
 
   playGameOverSting();
   showFeedback(`GAME OVER  |  Score: ${score}`);
