@@ -286,30 +286,50 @@ function playReloadSound() {
   });
 }
 
-// ── Sound: zombie groan (spatial) ─────────────────────────────
-function playGroan(panner, pitch) {
-  const c   = ctx();
-  const osc = c.createOscillator();
-  osc.type  = 'sawtooth';
-  osc.frequency.setValueAtTime(pitch,           c.currentTime);
-  osc.frequency.setValueAtTime(pitch * 0.82,    c.currentTime + 0.25);
-  osc.frequency.setValueAtTime(pitch,           c.currentTime + 0.55);
+// ── Sound: continuous zombie growl (started on spawn, stopped on death) ──
+function startGrowl(panner, pitch) {
+  const c    = ctx();
+  const osc  = c.createOscillator();
+  osc.type   = 'sawtooth';
+  osc.frequency.value = pitch;
+
+  // Slow LFO to wobble the pitch continuously
+  const lfo  = c.createOscillator();
+  lfo.type   = 'sine';
+  lfo.frequency.value = 0.8;
+  const lfoGain = c.createGain();
+  lfoGain.gain.value = pitch * 0.12;
+  lfo.connect(lfoGain);
+  lfoGain.connect(osc.frequency);
+
   const filt = c.createBiquadFilter();
   filt.type  = 'lowpass';
-  filt.frequency.value = Math.min(pitch * 3, 600);
-  const dist  = c.createWaveShaper();
-  dist.curve  = makeDistCurve(150);
-  const gain  = c.createGain();
-  gain.gain.setValueAtTime(0,   c.currentTime);
-  gain.gain.linearRampToValueAtTime(0.9, c.currentTime + 0.12);
-  gain.gain.linearRampToValueAtTime(0.7, c.currentTime + 0.45);
-  gain.gain.linearRampToValueAtTime(0,   c.currentTime + 0.8);
+  filt.frequency.value = Math.min(pitch * 3, 700);
+
+  const dist = c.createWaveShaper();
+  dist.curve = makeDistCurve(150);
+
+  const gain = c.createGain();
+  gain.gain.value = 0.75;
+
   osc.connect(filt);
   filt.connect(dist);
   dist.connect(gain);
   gain.connect(panner);
+
+  lfo.start();
   osc.start();
-  osc.stop(c.currentTime + 0.85);
+
+  // Return nodes so we can stop them on death
+  return { osc, lfo, gain };
+}
+
+function stopGrowl(growl) {
+  const t = ctx().currentTime;
+  growl.gain.gain.setValueAtTime(growl.gain.gain.value, t);
+  growl.gain.gain.linearRampToValueAtTime(0, t + 0.15);
+  growl.osc.stop(t + 0.2);
+  growl.lfo.stop(t + 0.2);
 }
 
 // ── Sound: zombie hit ──────────────────────────────────────────
@@ -401,20 +421,24 @@ const ZOMBIE_TYPES = [
 ];
 
 // ── Game state ─────────────────────────────────────────────────
-const MAX_AMMO    = 6;
-const MAX_ZOMBIES = 3;
-const AIM_WIDTH   = 35;    // degrees either side counts as "in sights"
+const MAX_AMMO  = 6;
+const AIM_WIDTH = 35;    // degrees either side counts as "in sights"
+
+// Round determines max zombies: round 1 = 1, round 2 = 2, round 3+ = 3
+function maxZombiesForRound(r) { return Math.min(r, 3); }
 
 let playerHeading  = 0;
 let zombies        = [];
 let ammo           = MAX_AMMO;
 let score          = 0;
+let round          = 1;
+let killsThisRound = 0;
 let gameRunning    = false;
 let advanceTimer   = null;
 
 // ── Spawn zombie ───────────────────────────────────────────────
 function spawnZombie() {
-  if (!gameRunning || zombies.length >= MAX_ZOMBIES) return;
+  if (!gameRunning || zombies.length >= maxZombiesForRound(round)) return;
 
   const type     = ZOMBIE_TYPES[Math.floor(Math.random() * ZOMBIE_TYPES.length)];
   const angle    = Math.random() * 360;
@@ -422,28 +446,24 @@ function spawnZombie() {
   const panner   = createPanner();
   setPannerPos(panner, (angle - playerHeading + 360) % 360, distance);
 
+  const growl = startGrowl(panner, type.pitch);
+
   const z = {
-    id:           Math.random(),
+    id:       Math.random(),
     angle,
     distance,
-    hp:           type.hp,
-    pitch:        type.pitch,
+    hp:       type.hp,
+    pitch:    type.pitch,
     panner,
-    groanTimer:   null,
+    growl,
   };
-
-  const baseInterval = 2200 + Math.random() * 1800;
-  z.groanTimer = setInterval(() => {
-    if (gameRunning) playGroan(z.panner, z.pitch);
-  }, baseInterval);
-  setTimeout(() => { if (gameRunning) playGroan(z.panner, z.pitch); }, 400);
 
   zombies.push(z);
   updateHUD();
 }
 
 function removeZombie(z) {
-  clearInterval(z.groanTimer);
+  stopGrowl(z.growl);
   z.panner.disconnect();
   zombies = zombies.filter(x => x.id !== z.id);
   updateHUD();
@@ -495,8 +515,15 @@ function shoot() {
     if (t.hp <= 0) {
       playDeath(t.panner, t.pitch);
       score++;
+      killsThisRound++;
       showFeedback('Zombie down!');
       removeZombie(t);
+      // Advance round after killing enough zombies (3 per round)
+      if (killsThisRound >= 3 && round < 3) {
+        round++;
+        killsThisRound = 0;
+        showFeedback(`Round ${round}!`);
+      }
       setTimeout(() => { if (gameRunning) spawnZombie(); }, 2000 + Math.random() * 2000);
     } else {
       playHit(t.panner, t.pitch);
@@ -580,7 +607,7 @@ function showFeedback(msg) {
 
 function updateHUD() {
   document.getElementById('ammo-display').textContent  = `Ammo: ${ammo}`;
-  document.getElementById('score-display').textContent = `Score: ${score}`;
+  document.getElementById('score-display').textContent = `Score: ${score}  |  Round: ${round}`;
   document.getElementById('zombie-count').textContent  = `Zombies: ${zombies.length}`;
 }
 
@@ -634,10 +661,12 @@ function onStartPressed() {
 
 function beginPlay() {
   setStatus('');
-  gameRunning = true;
-  ammo  = MAX_AMMO;
-  score = 0;
-  zombies = [];
+  gameRunning    = true;
+  ammo           = MAX_AMMO;
+  score          = 0;
+  round          = 1;
+  killsThisRound = 0;
+  zombies        = [];
   updateHUD();
 
   spawnZombie();
@@ -651,7 +680,7 @@ function triggerGameOver() {
   if (!gameRunning) return;
   gameRunning = false;
   clearInterval(advanceTimer);
-  zombies.forEach(z => { clearInterval(z.groanTimer); z.panner.disconnect(); });
+  zombies.forEach(z => { stopGrowl(z.growl); z.panner.disconnect(); });
   zombies = [];
 
   playGameOverSting();
