@@ -199,6 +199,37 @@ function ctx() {
   return audioCtx;
 }
 
+// ── Audio file loading ─────────────────────────────────────────
+const audioBuffers = {};
+
+async function loadSounds() {
+  const files = {
+    gunshot:      'sounds/gunshot.mp3',
+    zombieHit:    'sounds/zombie_hit.ogg',
+    reloadClick:  'sounds/reload_click.ogg',
+    reloadLatch:  'sounds/reload_latch.ogg',
+  };
+  await Promise.all(Object.entries(files).map(async ([key, path]) => {
+    try {
+      const resp = await fetch(path);
+      const raw  = await resp.arrayBuffer();
+      audioBuffers[key] = await ctx().decodeAudioData(raw);
+    } catch (e) { /* fall back to synthesised if file missing */ }
+  }));
+}
+
+function playBuffer(key, destination, volume = 1) {
+  if (!audioBuffers[key]) return false;
+  const src  = ctx().createBufferSource();
+  src.buffer = audioBuffers[key];
+  const gain = ctx().createGain();
+  gain.gain.value = volume;
+  src.connect(gain);
+  gain.connect(destination || ctx().destination);
+  src.start();
+  return true;
+}
+
 // ── Distortion curve helper ────────────────────────────────────
 function makeDistCurve(amount) {
   const n = 256, curve = new Float32Array(n);
@@ -229,8 +260,15 @@ function setPannerPos(panner, relDeg, distance) {
   panner.positionZ.setValueAtTime(-Math.cos(rad) * distance, t);
 }
 
-// ── Sound: gunshot (centre, no spatial) ───────────────────────
+function updateZombieAudio(z, relDeg) {
+  setPannerPos(z.panner, relDeg, z.distance);
+  z.growl.spatialFilt.frequency.setValueAtTime(calcSpatialCutoff(relDeg), ctx().currentTime);
+}
+
+// ── Sound: gunshot ─────────────────────────────────────────────
 function playGunshot() {
+  if (playBuffer('gunshot', null, 1.2)) return;
+  // Synthesised fallback
   const c   = ctx();
   const buf = c.createBuffer(1, c.sampleRate * 0.15, c.sampleRate);
   const d   = buf.getChannelData(0);
@@ -270,6 +308,16 @@ function playDryFire() {
 // ── Sound: reload ──────────────────────────────────────────────
 function playReloadSound() {
   const c = ctx();
+  // Real sounds: click then latch
+  if (audioBuffers.reloadClick && audioBuffers.reloadLatch) {
+    const s1 = c.createBufferSource(); s1.buffer = audioBuffers.reloadClick;
+    const s2 = c.createBufferSource(); s2.buffer = audioBuffers.reloadLatch;
+    s1.connect(c.destination); s2.connect(c.destination);
+    s1.start(c.currentTime);
+    s2.start(c.currentTime + 0.35);
+    return;
+  }
+  // Synthesised fallback
   [0, 0.18, 0.55].forEach((t, i) => {
     const buf = c.createBuffer(1, c.sampleRate * 0.06, c.sampleRate);
     const d   = buf.getChannelData(0);
@@ -286,6 +334,13 @@ function playReloadSound() {
   });
 }
 
+// ── Spatial low-pass filter (simulates pinna shadowing for rear sounds) ──
+function calcSpatialCutoff(relDeg) {
+  const rad = (relDeg * Math.PI) / 180;
+  const t   = (1 - Math.cos(rad)) / 2; // 0 = front, 1 = back
+  return 18000 - 17200 * t;            // 18000 Hz front → 800 Hz back
+}
+
 // ── Sound: continuous zombie growl (started on spawn, stopped on death) ──
 function startGrowl(panner, pitch) {
   const c    = ctx();
@@ -293,18 +348,18 @@ function startGrowl(panner, pitch) {
   osc.type   = 'sawtooth';
   osc.frequency.value = pitch;
 
-  // Slow LFO to wobble the pitch continuously
-  const lfo  = c.createOscillator();
-  lfo.type   = 'sine';
+  // Slow LFO to wobble the pitch
+  const lfo     = c.createOscillator();
+  lfo.type      = 'sine';
   lfo.frequency.value = 0.8;
   const lfoGain = c.createGain();
   lfoGain.gain.value = pitch * 0.12;
   lfo.connect(lfoGain);
   lfoGain.connect(osc.frequency);
 
-  const filt = c.createBiquadFilter();
-  filt.type  = 'lowpass';
-  filt.frequency.value = Math.min(pitch * 3, 700);
+  const staticFilt = c.createBiquadFilter();
+  staticFilt.type  = 'lowpass';
+  staticFilt.frequency.value = Math.min(pitch * 3, 700);
 
   const dist = c.createWaveShaper();
   dist.curve = makeDistCurve(150);
@@ -312,16 +367,23 @@ function startGrowl(panner, pitch) {
   const gain = c.createGain();
   gain.gain.value = 0.75;
 
-  osc.connect(filt);
-  filt.connect(dist);
+  // Spatial filter: cutoff driven by relative angle (front=bright, back=muffled)
+  const spatialFilt = c.createBiquadFilter();
+  spatialFilt.type  = 'lowpass';
+  spatialFilt.frequency.value = 18000;
+  spatialFilt.Q.value = 0.7;
+
+  // Chain: osc → staticFilt → dist → gain → spatialFilt → panner → destination
+  osc.connect(staticFilt);
+  staticFilt.connect(dist);
   dist.connect(gain);
-  gain.connect(panner);
+  gain.connect(spatialFilt);
+  spatialFilt.connect(panner);
 
   lfo.start();
   osc.start();
 
-  // Return nodes so we can stop them on death
-  return { osc, lfo, gain };
+  return { osc, lfo, gain, spatialFilt };
 }
 
 function stopGrowl(growl) {
@@ -333,12 +395,24 @@ function stopGrowl(growl) {
 }
 
 // ── Sound: zombie hit ──────────────────────────────────────────
-function playHit(panner, pitch) {
+function playHit(panner) {
+  // Real sound routed through the zombie's spatial panner
+  if (audioBuffers.zombieHit) {
+    const src  = ctx().createBufferSource();
+    src.buffer = audioBuffers.zombieHit;
+    const gain = ctx().createGain();
+    gain.gain.value = 1.2;
+    src.connect(gain);
+    gain.connect(panner);
+    src.start();
+    return;
+  }
+  // Synthesised fallback
   const c   = ctx();
   const osc = c.createOscillator();
   osc.type  = 'sawtooth';
-  osc.frequency.setValueAtTime(pitch * 1.3, c.currentTime);
-  osc.frequency.exponentialRampToValueAtTime(pitch * 0.5, c.currentTime + 0.25);
+  osc.frequency.setValueAtTime(200, c.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(60, c.currentTime + 0.25);
   const dist = c.createWaveShaper();
   dist.curve = makeDistCurve(200);
   const gain = c.createGain();
@@ -475,7 +549,7 @@ function onOrientation(e) {
     playerHeading = e.alpha;
     zombies.forEach(z => {
       const rel = ((z.angle - playerHeading) + 360) % 360;
-      setPannerPos(z.panner, rel, z.distance);
+      updateZombieAudio(z, rel);
     });
   }
 }
@@ -487,7 +561,7 @@ function tick() {
   zombies.forEach(z => {
     z.distance -= 0.06;
     const rel = ((z.angle - playerHeading) + 360) % 360;
-    setPannerPos(z.panner, rel, z.distance);
+    updateZombieAudio(z, rel);
     if (z.distance <= 1.2) triggerGameOver();
   });
 }
@@ -526,7 +600,7 @@ function shoot() {
       }
       setTimeout(() => { if (gameRunning) spawnZombie(); }, 2000 + Math.random() * 2000);
     } else {
-      playHit(t.panner, t.pitch);
+      playHit(t.panner);
       showFeedback('Hit!');
     }
   } else {
@@ -653,10 +727,12 @@ function onStartPressed() {
   // 4. Switch screens immediately.
   document.getElementById('start-screen').style.display = 'none';
   document.getElementById('game-screen').style.display  = 'block';
-  setStatus('Starting…');
+  setStatus('Loading sounds…');
 
-  // 5. Speak intro then begin play. speakIntro calls beginPlay when done.
-  speakIntro(beginPlay);
+  // 5. Load audio files, then speak intro, then begin play.
+  loadSounds()
+    .catch(() => {})
+    .then(() => { setStatus(''); speakIntro(beginPlay); });
 }
 
 function beginPlay() {
