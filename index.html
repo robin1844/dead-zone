@@ -920,7 +920,6 @@ function shoot() {
       }
       setTimeout(() => { if (gameRunning) spawnZombie(); }, 1000 + Math.random() * 1000);
     } else {
-      playHit(t.panner);
       showFeedback('Hit!');
     }
   } else {
