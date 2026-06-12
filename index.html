@@ -668,52 +668,57 @@ function playGameOverSting() {
   });
 }
 
-// ── Speech: "Entering the zone" placeholder ────────────────────
+// ── Speech helpers ─────────────────────────────────────────────
+// On iOS, AudioContext holds the audio session and silences speechSynthesis.
+// Suspending the context first releases the session so speech can be heard.
+function suspendForSpeech(utt, fallbackMs, onDone) {
+  const resume = () => { try { if (audioCtx) audioCtx.resume(); } catch (e) {} };
+  let called = false;
+  const finish = () => {
+    resume();
+    if (!called) { called = true; if (onDone) onDone(); }
+  };
+  const fb = setTimeout(finish, fallbackMs);
+  utt.onend   = () => { clearTimeout(fb); finish(); };
+  utt.onerror = () => { clearTimeout(fb); finish(); };
+  const speak = () => {
+    window.speechSynthesis.cancel();
+    setTimeout(() => window.speechSynthesis.speak(utt), 50);
+  };
+  if (audioCtx && audioCtx.state === 'running') {
+    audioCtx.suspend().then(speak).catch(speak);
+  } else {
+    speak();
+  }
+}
+
 function speakIntro(onDone) {
   if (!window.speechSynthesis) { onDone(); return; }
-  window.speechSynthesis.cancel();
-  const utt   = new SpeechSynthesisUtterance('Entering the zone. Stay alert.');
-  utt.rate    = 0.75;
-  utt.pitch   = 0.3;
-  utt.volume  = 1;
-  // Fallback timer in case onend never fires (iOS quirk)
-  let called = false;
-  const fallback = setTimeout(() => { if (!called) { called = true; onDone(); } }, 4000);
-  utt.onend   = () => { if (!called) { called = true; clearTimeout(fallback); onDone(); } };
-  utt.onerror = () => { if (!called) { called = true; clearTimeout(fallback); onDone(); } };
-  window.speechSynthesis.speak(utt);
+  const utt = new SpeechSynthesisUtterance('Entering the zone. Stay alert.');
+  utt.rate = 0.75; utt.pitch = 0.3; utt.volume = 1;
+  suspendForSpeech(utt, 4000, onDone);
 }
 
 function speakLevel(r, onDone) {
   onDone = onDone || (() => {});
   if (!window.speechSynthesis) { onDone(); return; }
-  window.speechSynthesis.cancel();
   const texts = {
     1: 'Level 1. One zombie attacks at a time. Three kills needed to advance.',
     2: 'Level 1 complete. Entering level 2. Two zombies attack at once. Three kills needed.',
     3: 'Level 2 complete. Entering level 3. Three zombies attack at once. Three kills needed.',
     4: 'Level 3 complete. Boss level. Five zombies attack first. Destroy them all, then face the boss.',
   };
-  const utt   = new SpeechSynthesisUtterance(texts[r] || '');
-  utt.rate    = 0.8;
-  utt.pitch   = 0.3;
-  utt.volume  = 1;
-  let called  = false;
-  const ms    = 3000 + (texts[r] || '').length * 55;
-  const fb    = setTimeout(() => { if (!called) { called = true; onDone(); } }, ms);
-  utt.onend   = () => { if (!called) { called = true; clearTimeout(fb); onDone(); } };
-  utt.onerror = () => { if (!called) { called = true; clearTimeout(fb); onDone(); } };
-  setTimeout(() => window.speechSynthesis.speak(utt), 50);
+  const utt = new SpeechSynthesisUtterance(texts[r] || '');
+  utt.rate = 0.8; utt.pitch = 0.3; utt.volume = 1;
+  const ms = 3000 + (texts[r] || '').length * 55;
+  suspendForSpeech(utt, ms, onDone);
 }
 
 function speakGameOver(score) {
   if (!window.speechSynthesis) return;
-  window.speechSynthesis.cancel();
-  const utt  = new SpeechSynthesisUtterance(`Game over. You took down ${score} zombie${score !== 1 ? 's' : ''}.`);
-  utt.rate   = 0.8;
-  utt.pitch  = 0.4;
-  utt.volume = 1;
-  window.speechSynthesis.speak(utt);
+  const utt = new SpeechSynthesisUtterance(`Game over. You took down ${score} zombie${score !== 1 ? 's' : ''}.`);
+  utt.rate = 0.8; utt.pitch = 0.4; utt.volume = 1;
+  suspendForSpeech(utt, 6000, null);
 }
 
 // ── Ambient fixed-position sounds ─────────────────────────────
@@ -828,7 +833,7 @@ let lastZombieTypeIndex = -1;
 // ── Game state ─────────────────────────────────────────────────
 const MAX_AMMO    = 6;
 const HIT_DEG     = 20;   // aim width AND lock-on zone (kept in sync - task 7)
-const TARGET_DIST = 11;   // targeting only active within this distance (task 6)
+const TARGET_DIST = 16;   // targeting only active within this distance
 
 // Round 1-3: 1/2/3 zombies. Round 4 (boss): 5 zombies + boss.
 function maxZombiesForRound(r) { return r === 4 ? 5 : Math.min(r, 3); }
@@ -1263,7 +1268,7 @@ function triggerGameOver() {
   playBuffer('playerDeath', ctx().destination, 2.0);
   playGameOverSting();
   showFeedback(`GAME OVER  |  Score: ${score}`);
-  speakGameOver(score);
+  setTimeout(() => speakGameOver(score), 2500);
 
   setTimeout(() => {
     document.getElementById('game-screen').style.display  = 'none';
@@ -1273,7 +1278,20 @@ function triggerGameOver() {
 }
 
 function triggerExit() {
-  triggerGameOver();
+  if (!gameRunning) return;
+  gameRunning = false;
+  clearInterval(advanceTimer);
+  stopBeeper();
+  zombies.forEach(z => {
+    if (z.gruntTimer) clearTimeout(z.gruntTimer);
+    stopGrowl(z.growl);
+    z.panner.disconnect();
+  });
+  zombies = [];
+  stopAmbient();
+  showFeedback('');
+  document.getElementById('game-screen').style.display  = 'none';
+  document.getElementById('start-screen').style.display = 'flex';
 }
 
 // ── Wire up events ─────────────────────────────────────────────
