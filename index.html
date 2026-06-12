@@ -207,7 +207,10 @@ async function loadSounds() {
     gunshot:      'sounds/gunshot.mp3',
     zombieHit:    'sounds/zombie_hit2.ogg',
     zombieDeath:  'sounds/zombie_death.ogg',
-    zombieGroan:  'sounds/zombie_groan.mp3',
+    groan1:       'sounds/groan1.mp3',
+    groan2:       'sounds/groan2.mp3',
+    groan3:       'sounds/groan3.mp3',
+    groan4:       'sounds/groan4.mp3',
     reloadClick:  'sounds/reload_click.ogg',
     reloadLatch:  'sounds/reload_latch.ogg',
   };
@@ -275,9 +278,10 @@ function setPannerPos(panner, relDeg, distance) {
 
 function updateZombieAudio(z, relDeg) {
   setPannerPos(z.panner, relDeg, z.distance);
-  const t = ctx().currentTime;
+  const t   = ctx().currentTime;
+  const wet = Math.min(0.7, calcAngleReverb(relDeg) + calcDistanceReverb(z.distance));
   z.growl.spatialFilt.frequency.setValueAtTime(calcSpatialCutoff(relDeg), t);
-  z.growl.reverbGain.gain.setValueAtTime(calcReverbWet(relDeg), t);
+  z.growl.reverbGain.gain.setValueAtTime(wet, t);
 }
 
 // ── Sound: gunshot ─────────────────────────────────────────────
@@ -356,21 +360,27 @@ function calcSpatialCutoff(relDeg) {
   return 18000 - 17700 * t;            // 18000 Hz front → 300 Hz back (very muffled)
 }
 
-function calcReverbWet(relDeg) {
+function calcAngleReverb(relDeg) {
   const rad = (relDeg * Math.PI) / 180;
   const t   = (1 - Math.cos(rad)) / 2; // 0 = front, 1 = back
-  return 0.5 * t;                      // 0 = dry front, 0.5 = echoed back
+  return 0.4 * t;                      // 0 = dry front, 0.4 = echoed back
 }
 
-// ── Sound: continuous zombie groan (looped file, pitch-shifted per type) ──
-// pitch values from ZOMBIE_TYPES map to playbackRate: 185→1.4, 110→1.0, 62→0.65
+function calcDistanceReverb(distance) {
+  // Zombies spawn at 12-18 units; game over at 1.2.
+  // Far = more environmental echo; close = dry and immediate.
+  const t = Math.max(0, Math.min(1, (distance - 2) / 16));
+  return 0.35 * t;                     // 0 when close → 0.35 when far
+}
+
 function pitchToRate(pitch) {
   if (pitch >= 160) return 1.4;
   if (pitch >= 90)  return 1.0;
   return 0.65;
 }
 
-function startGrowl(panner, pitch) {
+// Each zombie has its own dedicated sound file, looped with a natural pause.
+function startGrowl(panner, soundKey, pitch) {
   const c    = ctx();
   const gain = c.createGain();
   gain.gain.value = 0.9;
@@ -380,52 +390,63 @@ function startGrowl(panner, pitch) {
   spatialFilt.frequency.value = 18000;
   spatialFilt.Q.value = 0.7;
 
-  // Reverb: short delay that increases for rear sounds
-  const delay       = c.createDelay(0.1);
+  const delay      = c.createDelay(0.1);
   delay.delayTime.value = 0.028;
-  const reverbGain  = c.createGain();
-  reverbGain.gain.value = 0; // starts silent; updated by updateZombieAudio
+  const reverbGain = c.createGain();
+  reverbGain.gain.value = 0;
 
-  // Dry path:  gain → spatialFilt → panner
-  // Reverb path: gain → delay → reverbGain → spatialFilt → panner
   gain.connect(spatialFilt);
   gain.connect(delay);
   delay.connect(reverbGain);
   reverbGain.connect(spatialFilt);
   spatialFilt.connect(panner);
 
-  let src = null;
+  let stopped    = false;
+  let currentSrc = null;
 
-  if (audioBuffers.zombieGroan) {
-    src = c.createBufferSource();
-    src.buffer       = audioBuffers.zombieGroan;
-    src.loop         = true;
-    src.playbackRate.value = pitchToRate(pitch);
-    src.connect(gain);
-    src.start();
-  } else {
-    // Synthesised fallback
-    const osc  = c.createOscillator();
-    osc.type   = 'sawtooth';
-    osc.frequency.value = pitch;
-    const filt = c.createBiquadFilter();
-    filt.type  = 'lowpass';
-    filt.frequency.value = Math.min(pitch * 3, 700);
-    const dist = c.createWaveShaper();
-    dist.curve = makeDistCurve(150);
-    osc.connect(filt); filt.connect(dist); dist.connect(gain);
-    osc.start();
-    src = osc;
+  function playLoop() {
+    if (stopped) return;
+    if (audioBuffers[soundKey]) {
+      currentSrc        = c.createBufferSource();
+      currentSrc.buffer = audioBuffers[soundKey];
+      currentSrc.connect(gain);
+      currentSrc.start();
+      currentSrc.onended = () => {
+        currentSrc = null;
+        if (!stopped) setTimeout(playLoop, 1200 + Math.random() * 2000);
+      };
+    } else {
+      // Synthesised fallback - oscillator runs until stopped
+      const osc  = c.createOscillator();
+      osc.type   = 'sawtooth';
+      osc.frequency.value = pitch;
+      const filt = c.createBiquadFilter();
+      filt.type  = 'lowpass';
+      filt.frequency.value = Math.min(pitch * 3, 700);
+      const dist = c.createWaveShaper();
+      dist.curve = makeDistCurve(150);
+      osc.connect(filt); filt.connect(dist); dist.connect(gain);
+      osc.start();
+      currentSrc = osc;
+    }
   }
 
-  return { src, gain, spatialFilt, reverbGain };
+  playLoop();
+
+  return {
+    gain, spatialFilt, reverbGain,
+    stop() {
+      stopped = true;
+      if (currentSrc) { try { currentSrc.stop(); } catch(e) {} }
+    }
+  };
 }
 
 function stopGrowl(growl) {
+  growl.stop();
   const t = ctx().currentTime;
   growl.gain.gain.setValueAtTime(growl.gain.gain.value, t);
   growl.gain.gain.linearRampToValueAtTime(0, t + 0.3);
-  try { growl.src.stop(t + 0.35); } catch(e) {}
 }
 
 // ── Sound: zombie hit ──────────────────────────────────────────
@@ -631,9 +652,10 @@ function updateAmbientPanners() {
 
 // ── Zombie types ───────────────────────────────────────────────
 const ZOMBIE_TYPES = [
-  { pitch: 185, hp: 1 },   // small / high-pitched
-  { pitch: 110, hp: 2 },   // medium
-  { pitch:  62, hp: 3 },   // large / low-pitched
+  { soundKey: 'groan1', pitch: 185, hp: 1 },
+  { soundKey: 'groan2', pitch: 110, hp: 2 },
+  { soundKey: 'groan3', pitch:  90, hp: 2 },
+  { soundKey: 'groan4', pitch:  62, hp: 3 },
 ];
 
 // ── Game state ─────────────────────────────────────────────────
@@ -667,7 +689,7 @@ function spawnZombie() {
   const panner   = createPanner();
   setPannerPos(panner, (angle - playerHeading + 360) % 360, distance);
 
-  const growl = startGrowl(panner, type.pitch);
+  const growl = startGrowl(panner, type.soundKey, type.pitch);
 
   const z = {
     id:       Math.random(),
