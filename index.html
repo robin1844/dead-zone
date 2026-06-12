@@ -264,7 +264,9 @@ function setPannerPos(panner, relDeg, distance) {
 
 function updateZombieAudio(z, relDeg) {
   setPannerPos(z.panner, relDeg, z.distance);
-  z.growl.spatialFilt.frequency.setValueAtTime(calcSpatialCutoff(relDeg), ctx().currentTime);
+  const t = ctx().currentTime;
+  z.growl.spatialFilt.frequency.setValueAtTime(calcSpatialCutoff(relDeg), t);
+  z.growl.reverbGain.gain.setValueAtTime(calcReverbWet(relDeg), t);
 }
 
 // ── Sound: gunshot ─────────────────────────────────────────────
@@ -336,11 +338,17 @@ function playReloadSound() {
   });
 }
 
-// ── Spatial low-pass filter (simulates pinna shadowing for rear sounds) ──
+// ── Spatial cues: low-pass filter + reverb wet level ──────────
 function calcSpatialCutoff(relDeg) {
   const rad = (relDeg * Math.PI) / 180;
   const t   = (1 - Math.cos(rad)) / 2; // 0 = front, 1 = back
-  return 18000 - 17200 * t;            // 18000 Hz front → 800 Hz back
+  return 18000 - 17700 * t;            // 18000 Hz front → 300 Hz back (very muffled)
+}
+
+function calcReverbWet(relDeg) {
+  const rad = (relDeg * Math.PI) / 180;
+  const t   = (1 - Math.cos(rad)) / 2; // 0 = front, 1 = back
+  return 0.5 * t;                      // 0 = dry front, 0.5 = echoed back
 }
 
 // ── Sound: continuous zombie groan (looped file, pitch-shifted per type) ──
@@ -361,7 +369,18 @@ function startGrowl(panner, pitch) {
   spatialFilt.frequency.value = 18000;
   spatialFilt.Q.value = 0.7;
 
+  // Reverb: short delay that increases for rear sounds
+  const delay       = c.createDelay(0.1);
+  delay.delayTime.value = 0.028;
+  const reverbGain  = c.createGain();
+  reverbGain.gain.value = 0; // starts silent; updated by updateZombieAudio
+
+  // Dry path:  gain → spatialFilt → panner
+  // Reverb path: gain → delay → reverbGain → spatialFilt → panner
   gain.connect(spatialFilt);
+  gain.connect(delay);
+  delay.connect(reverbGain);
+  reverbGain.connect(spatialFilt);
   spatialFilt.connect(panner);
 
   let src = null;
@@ -388,7 +407,7 @@ function startGrowl(panner, pitch) {
     src = osc;
   }
 
-  return { src, gain, spatialFilt };
+  return { src, gain, spatialFilt, reverbGain };
 }
 
 function stopGrowl(growl) {
@@ -400,33 +419,31 @@ function stopGrowl(growl) {
 
 // ── Sound: zombie hit ──────────────────────────────────────────
 function playHit(panner) {
-  // Real sound routed through the zombie's spatial panner
+  const c = ctx();
+
+  // Always play a sharp synthesised crack so the hit is never missed
+  const noise = c.createBuffer(1, c.sampleRate * 0.08, c.sampleRate);
+  const nd    = noise.getChannelData(0);
+  for (let i = 0; i < nd.length; i++) nd[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / nd.length, 2);
+  const crackSrc  = c.createBufferSource();
+  crackSrc.buffer = noise;
+  const crackGain = c.createGain();
+  crackGain.gain.setValueAtTime(3.5, c.currentTime);
+  crackGain.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.08);
+  crackSrc.connect(crackGain);
+  crackGain.connect(panner);
+  crackSrc.start();
+
+  // Layer the organic hit file on top at high volume
   if (audioBuffers.zombieHit) {
-    const src  = ctx().createBufferSource();
+    const src  = c.createBufferSource();
     src.buffer = audioBuffers.zombieHit;
-    const gain = ctx().createGain();
-    gain.gain.value = 1.2;
+    const gain = c.createGain();
+    gain.gain.value = 3.5;
     src.connect(gain);
     gain.connect(panner);
     src.start();
-    return;
   }
-  // Synthesised fallback
-  const c   = ctx();
-  const osc = c.createOscillator();
-  osc.type  = 'sawtooth';
-  osc.frequency.setValueAtTime(200, c.currentTime);
-  osc.frequency.exponentialRampToValueAtTime(60, c.currentTime + 0.25);
-  const dist = c.createWaveShaper();
-  dist.curve = makeDistCurve(200);
-  const gain = c.createGain();
-  gain.gain.setValueAtTime(1.2, c.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.01, c.currentTime + 0.25);
-  osc.connect(dist);
-  dist.connect(gain);
-  gain.connect(panner);
-  osc.start();
-  osc.stop(c.currentTime + 0.28);
 }
 
 // ── Sound: zombie death ────────────────────────────────────────
