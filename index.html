@@ -723,16 +723,45 @@ function scheduleGrunt(z) {
 // ── Target detector beeper ─────────────────────────────────────
 // Plays through the main output (not spatialized) — it's the gun's
 // sensor, not the zombie. Beeps fast when aimed at a zombie.
+// Electronic chirp: square wave sweeping 1800→1100 Hz with fast decay
 function playTargetTick(vol) {
+  const c = ctx();
+  const osc = c.createOscillator();
+  osc.type = 'square';
+  osc.frequency.setValueAtTime(1800, c.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(1100, c.currentTime + 0.028);
+  const g = c.createGain();
+  g.gain.setValueAtTime(vol * 0.22, c.currentTime);  // square waves are louder than sine
+  g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.04);
+  osc.connect(g); g.connect(c.destination);
+  osc.start(); osc.stop(c.currentTime + 0.045);
+}
+
+// Persistent lock-on tone: fades in when dead-on target, out when leaving
+let lockToneNodes = null;
+
+function startLockTone() {
+  if (lockToneNodes) return;
   const c   = ctx();
   const osc = c.createOscillator();
-  osc.type  = 'sine';
-  osc.frequency.value = 1450;
+  osc.type  = 'square';
+  osc.frequency.value = 2400;
   const g = c.createGain();
-  g.gain.setValueAtTime(vol, c.currentTime);
-  g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.03);
+  g.gain.setValueAtTime(0, c.currentTime);
+  g.gain.linearRampToValueAtTime(0.09, c.currentTime + 0.06);
   osc.connect(g); g.connect(c.destination);
-  osc.start(); osc.stop(c.currentTime + 0.04);
+  osc.start();
+  lockToneNodes = { osc, gain: g };
+}
+
+function stopLockTone() {
+  if (!lockToneNodes) return;
+  const { osc, gain } = lockToneNodes;
+  const t = ctx().currentTime;
+  gain.gain.setValueAtTime(gain.gain.value, t);
+  gain.gain.linearRampToValueAtTime(0, t + 0.06);
+  try { osc.stop(t + 0.08); } catch(e) {}
+  lockToneNodes = null;
 }
 
 function runBeeper() {
@@ -744,21 +773,32 @@ function runBeeper() {
     if (diff < minDiff) minDiff = diff;
   });
 
-  const RANGE = 80;
+  const LOCK_DEG = 15;  // solid tone within this arc
+  const RANGE    = 80;  // ranging beeps active within this arc
   let interval;
-  if (zombies.length === 0 || minDiff >= RANGE) {
-    interval = 2200;  // silent wait when nothing in arc
+
+  if (minDiff < LOCK_DEG && zombies.length > 0) {
+    startLockTone();
+    interval = 2200;    // beeps pause while locked - tone says it all
   } else {
-    const t  = minDiff / RANGE;          // 0 = dead-on, 1 = edge
-    interval = 120 + t * 1180;           // 120 ms → 1300 ms
-    const vol = 0.18 + (1 - t) * 0.65;  // quiet at edge, loud on target
-    playTargetTick(vol);
+    stopLockTone();
+    if (zombies.length === 0 || minDiff >= RANGE) {
+      interval = 2200;
+    } else {
+      const t  = (minDiff - LOCK_DEG) / (RANGE - LOCK_DEG); // 0→1 from lock edge to range edge
+      interval = 130 + t * 1170;
+      const vol = 0.18 + (1 - t) * 0.62;
+      playTargetTick(vol);
+    }
   }
   beeperTimeout = setTimeout(runBeeper, interval);
 }
 
 function startBeeper() { stopBeeper(); runBeeper(); }
-function stopBeeper()  { if (beeperTimeout) { clearTimeout(beeperTimeout); beeperTimeout = null; } }
+function stopBeeper()  {
+  if (beeperTimeout) { clearTimeout(beeperTimeout); beeperTimeout = null; }
+  stopLockTone();
+}
 
 // ── Device orientation + gyro fusion ──────────────────────────
 // Compass (alpha) is accurate but lag-smoothed by iOS.
