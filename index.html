@@ -286,6 +286,7 @@ function updateZombieAudio(z, relDeg) {
   const wet = Math.min(0.7, calcAngleReverb(relDeg) + calcDistanceReverb(z.distance));
   z.growl.spatialFilt.frequency.setValueAtTime(calcSpatialCutoff(relDeg), t);
   z.growl.reverbGain.gain.setValueAtTime(wet, t);
+  z.growl.dirGain.gain.setValueAtTime(calcDirGain(relDeg, z.distance), t);
 }
 
 // ── Sound: gunshot ─────────────────────────────────────────────
@@ -373,10 +374,23 @@ function calcAngleReverb(relDeg) {
 }
 
 function calcDistanceReverb(distance) {
-  // Zombies spawn at 12-18 units; game over at 1.2.
-  // Far = more environmental echo; close = dry and immediate.
   const t = Math.max(0, Math.min(1, (distance - 2) / 16));
-  return 0.35 * t;                     // 0 when close → 0.35 when far
+  return 0.35 * t;
+}
+
+// dirGain combines rear attenuation and close-proximity boost.
+// Applied via a dedicated gain node so stopGrowl fade-out is unaffected.
+function calcDirGain(relDeg, distance) {
+  // Rear attenuation: sounds directly behind are 75% quieter than front
+  const rad      = (relDeg * Math.PI) / 180;
+  const rearT    = (1 - Math.cos(rad)) / 2;          // 0 = front, 1 = back
+  const rearAtten = 1.0 - 0.75 * rearT;              // 1.0 front → 0.25 back
+
+  // Close boost: zombie within 4 units sounds dramatically louder
+  const closeT   = Math.max(0, Math.min(1, (8 - distance) / 6.5));
+  const closeBoost = 1.0 + 3.5 * closeT;             // 1.0 at distance 8+ → 4.5 at distance 1.5
+
+  return Math.min(rearAtten * closeBoost, 4.0);
 }
 
 function pitchToRate(pitch) {
@@ -401,8 +415,12 @@ function startGrowl(panner, soundKey, pitch) {
   const reverbGain = c.createGain();
   reverbGain.gain.value = 0;
 
-  gain.connect(spatialFilt);
-  gain.connect(delay);
+  const dirGain = c.createGain();
+  dirGain.gain.value = 1.0;
+
+  gain.connect(dirGain);
+  dirGain.connect(spatialFilt);
+  dirGain.connect(delay);
   delay.connect(reverbGain);
   reverbGain.connect(spatialFilt);
   spatialFilt.connect(panner);
@@ -440,7 +458,7 @@ function startGrowl(panner, soundKey, pitch) {
   playLoop();
 
   return {
-    gain, spatialFilt, reverbGain,
+    gain, dirGain, spatialFilt, reverbGain,
     stop() {
       stopped = true;
       if (currentSrc) { try { currentSrc.stop(); } catch(e) {} }
@@ -505,16 +523,19 @@ function playHitThud() {
 
 // ── Sound: zombie death ────────────────────────────────────────
 function playBodyHit(distance) {
-  // Pick randomly from whichever body-hit files actually loaded
   const candidates = ['bodyHitA', 'bodyHitB', 'bodyHitC'].filter(k => audioBuffers[k]);
   if (!candidates.length) return;
   const key = candidates[Math.floor(Math.random() * candidates.length)];
   const c   = ctx();
   const src = c.createBufferSource();
   src.buffer = audioBuffers[key];
+  // Distinct playback rate per file so the three sounds are clearly different
+  src.playbackRate.value = key === 'bodyHitA' ? 1.0
+                         : key === 'bodyHitB' ? 0.82
+                         :                     1.18;
   const gain = c.createGain();
-  // Far zombie (distance ~18) = quieter thud; close (distance ~2) = loud
-  const distVol = Math.max(0.3, Math.min(1, 3 / Math.max(distance, 1)));
+  // Close (distance ~2) = full volume; far (distance ~18) = much quieter; no floor
+  const distVol = Math.min(1, 2.5 / Math.max(distance, 1));
   gain.gain.value = 2.5 * distVol;
   src.connect(gain);
   gain.connect(c.destination);
