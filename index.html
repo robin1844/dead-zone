@@ -212,6 +212,7 @@ async function loadSounds() {
     groan3:       'sounds/groan3.mp3',
     groan4:       'sounds/groan4.mp3',
     groan5:       'sounds/groan5.mp3',
+    bossGroan:    'sounds/zombie_groan.mp3',
     bodyHitA:     'sounds/body_hit_a.mp3',
     bodyHitB:     'sounds/body_hit_b.mp3',
     bodyHitC:     'sounds/body_hit_c.mp3',
@@ -498,6 +499,84 @@ function playHit(panner) {
   }
 }
 
+// ── Boss: spawn, death thud, victory ──────────────────────────
+function spawnBoss() {
+  if (bossSpawned) return;
+  bossSpawned = true;
+  const angle    = Math.random() * 360;
+  const distance = 16 + Math.random() * 4;
+  const panner   = createPanner();
+  setPannerPos(panner, (angle - playerHeading + 360) % 360, distance);
+  const growl = startGrowl(panner, 'bossGroan', 40);
+  const z = {
+    id: Math.random(), angle, distance,
+    hp: 15, pitch: 40, speed: 0.096, isBoss: true,
+    panner, growl,
+  };
+  zombies.push(z);
+  setTimeout(() => scheduleGrunt(z), 1200);
+  showFeedback('THE BOSS APPROACHES!');
+  if (window.speechSynthesis) {
+    window.speechSynthesis.cancel();
+    const utt = new SpeechSynthesisUtterance('The boss is here.');
+    utt.rate = 0.65; utt.pitch = 0.1; utt.volume = 1;
+    window.speechSynthesis.speak(utt);
+  }
+  updateHUD();
+}
+
+function playBossBodyHit() {
+  if (!audioBuffers.bodyHitA) return;
+  const c   = ctx();
+  const src = c.createBufferSource();
+  src.buffer = audioBuffers.bodyHitA;
+  src.playbackRate.value = 0.65;
+  const gain = c.createGain();
+  gain.gain.value = 7.0;
+  // Reverb via three tapped delays - echoes around the chamber
+  [[0.18, 0.75], [0.34, 0.55], [0.52, 0.35]].forEach(([t, w]) => {
+    const d = c.createDelay(1.0); d.delayTime.value = t;
+    const g = c.createGain();    g.gain.value = w;
+    gain.connect(d); d.connect(g); g.connect(c.destination);
+  });
+  src.connect(gain); gain.connect(c.destination);
+  src.start();
+}
+
+function enterBossLevel() {
+  round = 4; killsThisRound = 0; bossSpawned = false;
+  speakLevel(4, () => {
+    for (let i = 0; i < 5; i++)
+      setTimeout(() => { if (gameRunning) spawnZombie(); }, i * 700);
+  });
+}
+
+function triggerVictory() {
+  if (!gameRunning) return;
+  gameRunning = false;
+  clearInterval(advanceTimer);
+  stopBeeper();
+  zombies.forEach(z => {
+    if (z.gruntTimer) clearTimeout(z.gruntTimer);
+    stopGrowl(z.growl); z.panner.disconnect();
+  });
+  zombies = [];
+  stopAmbient();
+  showFeedback('VICTORY! You survived the Dead Zone!');
+  if (window.speechSynthesis) {
+    window.speechSynthesis.cancel();
+    const utt = new SpeechSynthesisUtterance(
+      `Victory! You survived the dead zone. Final score: ${score}.`);
+    utt.rate = 0.8; utt.pitch = 0.5; utt.volume = 1;
+    window.speechSynthesis.speak(utt);
+  }
+  setTimeout(() => {
+    document.getElementById('game-screen').style.display  = 'none';
+    document.getElementById('start-screen').style.display = 'flex';
+    document.getElementById('feedback').textContent = '';
+  }, 7000);
+}
+
 // ── Sound: bullet hit thud (non-lethal) ───────────────────────
 function playHitThud() {
   const c   = ctx();
@@ -538,7 +617,7 @@ function playBodyHit(distance) {
   src.start();
 }
 
-function playDeath(panner, pitch, distance) {
+function playDeath(panner, pitch, distance, isBoss) {
   // Zombie death cry through the spatial panner
   if (audioBuffers.zombieDeath) {
     const src  = ctx().createBufferSource();
@@ -564,8 +643,11 @@ function playDeath(panner, pitch, distance) {
     osc.connect(dist); dist.connect(gain); gain.connect(panner);
     osc.start(); osc.stop(c.currentTime + 1.05);
   }
-  // Body hits the floor ~400 ms after the death cry starts
-  setTimeout(() => playBodyHit(distance || 5), 400);
+  if (isBoss) {
+    setTimeout(playBossBodyHit, 500);
+  } else {
+    setTimeout(() => playBodyHit(distance || 5), 400);
+  }
 }
 
 // ── Sound: game-over sting ─────────────────────────────────────
@@ -598,6 +680,28 @@ function speakIntro(onDone) {
   const fallback = setTimeout(() => { if (!called) { called = true; onDone(); } }, 4000);
   utt.onend   = () => { if (!called) { called = true; clearTimeout(fallback); onDone(); } };
   utt.onerror = () => { if (!called) { called = true; clearTimeout(fallback); onDone(); } };
+  window.speechSynthesis.speak(utt);
+}
+
+function speakLevel(r, onDone) {
+  onDone = onDone || (() => {});
+  if (!window.speechSynthesis) { onDone(); return; }
+  window.speechSynthesis.cancel();
+  const texts = {
+    1: 'Level 1. One zombie attacks at a time. Three kills needed to advance.',
+    2: 'Level 1 complete. Entering level 2. Two zombies attack at once. Three kills needed.',
+    3: 'Level 2 complete. Entering level 3. Three zombies attack at once. Three kills needed.',
+    4: 'Level 3 complete. Boss level. Five zombies attack first. Destroy them all, then face the boss.',
+  };
+  const utt   = new SpeechSynthesisUtterance(texts[r] || '');
+  utt.rate    = 0.8;
+  utt.pitch   = 0.3;
+  utt.volume  = 1;
+  let called  = false;
+  const ms    = 3000 + (texts[r] || '').length * 55;
+  const fb    = setTimeout(() => { if (!called) { called = true; onDone(); } }, ms);
+  utt.onend   = () => { if (!called) { called = true; clearTimeout(fb); onDone(); } };
+  utt.onerror = () => { if (!called) { called = true; clearTimeout(fb); onDone(); } };
   window.speechSynthesis.speak(utt);
 }
 
@@ -721,11 +825,12 @@ const ZOMBIE_TYPES = [
 let lastZombieTypeIndex = -1;
 
 // ── Game state ─────────────────────────────────────────────────
-const MAX_AMMO  = 6;
-const AIM_WIDTH = 55;    // degrees either side counts as "in sights"
+const MAX_AMMO    = 6;
+const HIT_DEG     = 20;   // aim width AND lock-on zone (kept in sync - task 7)
+const TARGET_DIST = 11;   // targeting only active within this distance (task 6)
 
-// Round determines max zombies: round 1 = 1, round 2 = 2, round 3+ = 3
-function maxZombiesForRound(r) { return Math.min(r, 3); }
+// Round 1-3: 1/2/3 zombies. Round 4 (boss): 5 zombies + boss.
+function maxZombiesForRound(r) { return r === 4 ? 5 : Math.min(r, 3); }
 
 let playerHeading    = 0;
 let gyroHeading      = 0;
@@ -740,6 +845,7 @@ let killsThisRound   = 0;
 let gameRunning      = false;
 let advanceTimer     = null;
 let beeperTimeout    = null;
+let bossSpawned      = false;
 
 // ── Spawn zombie ───────────────────────────────────────────────
 function spawnZombie() {
@@ -762,6 +868,8 @@ function spawnZombie() {
     distance,
     hp:       type.hp,
     pitch:    type.pitch,
+    speed:    0.144,
+    isBoss:   false,
     panner,
     growl,
   };
@@ -838,26 +946,25 @@ function playLockBeep() {
 
 function runBeeper() {
   if (!gameRunning) return;
-  // Only track the nearest zombie to avoid confusion with multiple targets
+  // Only range zombies within TARGET_DIST - task 6
   let minDiff = 180;
-  zombies.forEach(z => {
+  zombies.filter(z => z.distance <= TARGET_DIST).forEach(z => {
     const rel  = ((z.angle - playerHeading) + 360) % 360;
     const diff = rel > 180 ? 360 - rel : rel;
     if (diff < minDiff) minDiff = diff;
   });
 
-  const LOCK_DEG = 20;   // rapid lock-on beeps within this arc
-  const RANGE    = 140;  // ranging beeps active up to this arc
+  const RANGE = 140;
   let interval;
 
-  if (zombies.length === 0 || minDiff >= RANGE) {
-    interval = 2200;  // nothing in range - stay quiet
-  } else if (minDiff < LOCK_DEG) {
+  if (minDiff >= RANGE) {
+    interval = 2200;
+  } else if (minDiff < HIT_DEG) {   // HIT_DEG keeps lock-on zone = aim width - task 7
     playLockBeep();
-    interval = 80;    // ~12 beeps/sec - rapid locked-on pulse
+    interval = 80;
   } else {
-    const t  = (minDiff - LOCK_DEG) / (RANGE - LOCK_DEG); // 0 at lock edge, 1 at range edge
-    interval = 150 + t * 1400;                              // 150 ms → 1550 ms
+    const t  = (minDiff - HIT_DEG) / (RANGE - HIT_DEG);
+    interval = 150 + t * 1400;
     const vol = 0.2 + (1 - t) * 0.6;
     playTargetTick(vol);
   }
@@ -914,7 +1021,7 @@ function onMotion(e) {
 function tick() {
   if (!gameRunning) return;
   zombies.forEach(z => {
-    z.distance -= 0.12;
+    z.distance -= z.speed;
     const rel = ((z.angle - playerHeading) + 360) % 360;
     updateZombieAudio(z, rel);
     if (z.distance <= 1.2) triggerGameOver();
@@ -925,9 +1032,10 @@ function tick() {
 function getTarget() {
   let best = null, bestDiff = Infinity;
   zombies.forEach(z => {
+    if (z.distance > TARGET_DIST) return;   // task 6: must be close enough
     let rel  = ((z.angle - playerHeading) + 360) % 360;
     let diff = rel > 180 ? 360 - rel : rel;
-    if (diff < AIM_WIDTH && diff < bestDiff) { bestDiff = diff; best = z; }
+    if (diff < HIT_DEG && diff < bestDiff) { bestDiff = diff; best = z; }  // task 7
   });
   return best;
 }
@@ -942,18 +1050,41 @@ function shoot() {
   if (t) {
     t.hp--;
     if (t.hp <= 0) {
-      playDeath(t.panner, t.pitch, t.distance);
+      playDeath(t.panner, t.pitch, t.distance, t.isBoss);
       score++;
       killsThisRound++;
+
+      if (t.isBoss) {
+        showFeedback('BOSS DESTROYED!');
+        removeZombie(t);
+        triggerVictory();
+        return;
+      }
+
       showFeedback('Zombie down!');
       removeZombie(t);
-      // Advance round after killing enough zombies (3 per round)
-      if (killsThisRound >= 3 && round < 3) {
-        round++;
-        killsThisRound = 0;
-        showFeedback(`Round ${round}!`);
+
+      // Boss level: check whether to spawn boss (task 4)
+      if (round === 4 && !bossSpawned) {
+        const regularLeft = zombies.filter(z => !z.isBoss).length;
+        if (regularLeft <= 2) spawnBoss();
       }
-      setTimeout(() => { if (gameRunning) spawnZombie(); }, 1000 + Math.random() * 1000);
+
+      // Level advancement (tasks 2 & 3)
+      if (round <= 3) {
+        if (killsThisRound >= 3 && round === 3) {
+          enterBossLevel();
+        } else if (killsThisRound >= 3) {
+          round++;
+          killsThisRound = 0;
+          speakLevel(round, () => {});
+          showFeedback(`Level ${round}!`);
+          setTimeout(() => { if (gameRunning) spawnZombie(); }, 900 + Math.random() * 600);
+        } else {
+          setTimeout(() => { if (gameRunning) spawnZombie(); }, 1000 + Math.random() * 1000);
+        }
+      }
+      // Round 4: no auto-respawn - fixed zombie count
     } else {
       playHitThud();
       showFeedback('Hit!');
@@ -1105,16 +1236,15 @@ function beginPlay() {
   score          = 0;
   round          = 1;
   killsThisRound = 0;
+  bossSpawned    = false;
   zombies        = [];
   updateHUD();
 
   startAmbient();
   startBeeper();
+  speakLevel(1, () => {});  // level 1 announcement alongside game start
 
   spawnZombie();
-  setTimeout(spawnZombie, 900);
-  setTimeout(spawnZombie, 1800);
-
   advanceTimer = setInterval(tick, 200);
 }
 
