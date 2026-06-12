@@ -286,7 +286,7 @@ function updateZombieAudio(z, relDeg) {
   const wet = Math.min(0.7, calcAngleReverb(relDeg) + calcDistanceReverb(z.distance));
   z.growl.spatialFilt.frequency.setValueAtTime(calcSpatialCutoff(relDeg), t);
   z.growl.reverbGain.gain.setValueAtTime(wet, t);
-  z.growl.dirGain.gain.setValueAtTime(calcDirGain(relDeg, z.distance), t);
+  z.growl.gain.gain.setValueAtTime(0.9 * calcDirGain(relDeg, z.distance), t);
 }
 
 // ── Sound: gunshot ─────────────────────────────────────────────
@@ -415,12 +415,8 @@ function startGrowl(panner, soundKey, pitch) {
   const reverbGain = c.createGain();
   reverbGain.gain.value = 0;
 
-  const dirGain = c.createGain();
-  dirGain.gain.value = 1.0;
-
-  gain.connect(dirGain);
-  dirGain.connect(spatialFilt);
-  dirGain.connect(delay);
+  gain.connect(spatialFilt);
+  gain.connect(delay);
   delay.connect(reverbGain);
   reverbGain.connect(spatialFilt);
   spatialFilt.connect(panner);
@@ -458,7 +454,7 @@ function startGrowl(panner, soundKey, pitch) {
   playLoop();
 
   return {
-    gain, dirGain, spatialFilt, reverbGain,
+    gain, spatialFilt, reverbGain,
     stop() {
       stopped = true;
       if (currentSrc) { try { currentSrc.stop(); } catch(e) {} }
