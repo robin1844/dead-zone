@@ -211,6 +211,10 @@ async function loadSounds() {
     groan2:       'sounds/groan2.mp3',
     groan3:       'sounds/groan3.mp3',
     groan4:       'sounds/groan4.mp3',
+    groan5:       'sounds/groan5.mp3',
+    bodyHitA:     'sounds/body_hit_a.mp3',
+    bodyHitB:     'sounds/body_hit_b.mp3',
+    bodyHitC:     'sounds/body_hit_c.mp3',
     reloadClick:  'sounds/reload_click.ogg',
     reloadLatch:  'sounds/reload_latch.ogg',
   };
@@ -479,7 +483,28 @@ function playHit(panner) {
 }
 
 // ── Sound: zombie death ────────────────────────────────────────
+function playBodyHit() {
+  // 1/3 chance: bodyHitA (BewareOfTheElmo 739009)
+  // 1/3 chance: bodyHitB (your edited clip B - drop in as sounds/body_hit_b.mp3)
+  // 1/3 chance: bodyHitC (your edited clip C - drop in as sounds/body_hit_c.mp3)
+  const roll = Math.random();
+  const key  = roll < 0.333 ? 'bodyHitA'
+             : roll < 0.667 ? 'bodyHitB'
+             :                'bodyHitC';
+  const buf  = audioBuffers[key] || audioBuffers.bodyHitA; // fallback to A until B/C arrive
+  if (!buf) return;
+  const c   = ctx();
+  const src = c.createBufferSource();
+  src.buffer = buf;
+  const gain = c.createGain();
+  gain.gain.value = 2.0;
+  src.connect(gain);
+  gain.connect(c.destination); // body hits the floor - plays centre, not spatialized
+  src.start();
+}
+
 function playDeath(panner, pitch) {
+  // Zombie death cry through the spatial panner
   if (audioBuffers.zombieDeath) {
     const src  = ctx().createBufferSource();
     src.buffer = audioBuffers.zombieDeath;
@@ -489,24 +514,23 @@ function playDeath(panner, pitch) {
     src.connect(gain);
     gain.connect(panner);
     src.start();
-    return;
+  } else {
+    // Synthesised fallback
+    const c   = ctx();
+    const osc = c.createOscillator();
+    osc.type  = 'sawtooth';
+    osc.frequency.setValueAtTime(pitch,           c.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(pitch * 0.2, c.currentTime + 1.0);
+    const dist = c.createWaveShaper();
+    dist.curve = makeDistCurve(400);
+    const gain = c.createGain();
+    gain.gain.setValueAtTime(1.8,  c.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, c.currentTime + 1.0);
+    osc.connect(dist); dist.connect(gain); gain.connect(panner);
+    osc.start(); osc.stop(c.currentTime + 1.05);
   }
-  // Synthesised fallback
-  const c   = ctx();
-  const osc = c.createOscillator();
-  osc.type  = 'sawtooth';
-  osc.frequency.setValueAtTime(pitch,      c.currentTime);
-  osc.frequency.exponentialRampToValueAtTime(pitch * 0.2, c.currentTime + 1.0);
-  const dist = c.createWaveShaper();
-  dist.curve = makeDistCurve(400);
-  const gain = c.createGain();
-  gain.gain.setValueAtTime(1.8, c.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.01, c.currentTime + 1.0);
-  osc.connect(dist);
-  dist.connect(gain);
-  gain.connect(panner);
-  osc.start();
-  osc.stop(c.currentTime + 1.05);
+  // Body hits the floor ~400 ms after the death cry starts
+  setTimeout(playBodyHit, 400);
 }
 
 // ── Sound: game-over sting ─────────────────────────────────────
@@ -656,7 +680,10 @@ const ZOMBIE_TYPES = [
   { soundKey: 'groan2', pitch: 110, hp: 2 },
   { soundKey: 'groan3', pitch:  90, hp: 2 },
   { soundKey: 'groan4', pitch:  62, hp: 3 },
+  { soundKey: 'groan5', pitch:  75, hp: 2 },
 ];
+
+let lastZombieTypeIndex = -1;
 
 // ── Game state ─────────────────────────────────────────────────
 const MAX_AMMO  = 6;
@@ -683,7 +710,10 @@ let beeperTimeout    = null;
 function spawnZombie() {
   if (!gameRunning || zombies.length >= maxZombiesForRound(round)) return;
 
-  const type     = ZOMBIE_TYPES[Math.floor(Math.random() * ZOMBIE_TYPES.length)];
+  const available = ZOMBIE_TYPES.filter((_, i) => i !== lastZombieTypeIndex);
+  const typeIdx   = ZOMBIE_TYPES.indexOf(available[Math.floor(Math.random() * available.length)]);
+  lastZombieTypeIndex = typeIdx;
+  const type      = ZOMBIE_TYPES[typeIdx];
   const angle    = Math.random() * 360;
   const distance = 12 + Math.random() * 6;
   const panner   = createPanner();
@@ -849,7 +879,7 @@ function onMotion(e) {
 function tick() {
   if (!gameRunning) return;
   zombies.forEach(z => {
-    z.distance -= 0.06;
+    z.distance -= 0.12;
     const rel = ((z.angle - playerHeading) + 360) % 360;
     updateZombieAudio(z, rel);
     if (z.distance <= 1.2) triggerGameOver();
@@ -888,7 +918,7 @@ function shoot() {
         killsThisRound = 0;
         showFeedback(`Round ${round}!`);
       }
-      setTimeout(() => { if (gameRunning) spawnZombie(); }, 2000 + Math.random() * 2000);
+      setTimeout(() => { if (gameRunning) spawnZombie(); }, 1000 + Math.random() * 1000);
     } else {
       playHit(t.panner);
       showFeedback('Hit!');
@@ -1047,8 +1077,8 @@ function beginPlay() {
   startBeeper();
 
   spawnZombie();
+  setTimeout(spawnZombie, 900);
   setTimeout(spawnZombie, 1800);
-  setTimeout(spawnZombie, 3600);
 
   advanceTimer = setInterval(tick, 200);
 }
