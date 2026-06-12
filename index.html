@@ -213,6 +213,7 @@ async function loadSounds() {
     groan4:       'sounds/groan4.mp3',
     groan5:       'sounds/groan5.mp3',
     bossGroan:    'sounds/zombie_groan.mp3',
+    playerDeath:  'sounds/player_death.mp3',
     bodyHitA:     'sounds/body_hit_a.mp3',
     bodyHitB:     'sounds/body_hit_b.mp3',
     bodyHitC:     'sounds/body_hit_c.mp3',
@@ -287,7 +288,7 @@ function updateZombieAudio(z, relDeg) {
   const wet = Math.min(0.7, calcAngleReverb(relDeg) + calcDistanceReverb(z.distance));
   z.growl.spatialFilt.frequency.setValueAtTime(calcSpatialCutoff(relDeg), t);
   z.growl.reverbGain.gain.setValueAtTime(wet, t);
-  z.growl.gain.gain.setValueAtTime(0.9 * calcDirGain(relDeg, z.distance), t);
+  z.growl.gain.gain.setValueAtTime(1.62 * calcDirGain(relDeg, z.distance), t);
 }
 
 // ── Sound: gunshot ─────────────────────────────────────────────
@@ -404,7 +405,7 @@ function pitchToRate(pitch) {
 function startGrowl(panner, soundKey, pitch) {
   const c    = ctx();
   const gain = c.createGain();
-  gain.gain.value = 0.9;
+  gain.gain.value = 1.62;
 
   const spatialFilt = c.createBiquadFilter();
   spatialFilt.type  = 'lowpass';
@@ -702,7 +703,7 @@ function speakLevel(r, onDone) {
   const fb    = setTimeout(() => { if (!called) { called = true; onDone(); } }, ms);
   utt.onend   = () => { if (!called) { called = true; clearTimeout(fb); onDone(); } };
   utt.onerror = () => { if (!called) { called = true; clearTimeout(fb); onDone(); } };
-  window.speechSynthesis.speak(utt);
+  setTimeout(() => window.speechSynthesis.speak(utt), 50);
 }
 
 function speakGameOver(score) {
@@ -1226,7 +1227,7 @@ function onStartPressed() {
   // 5. Load audio files, then speak intro, then begin play.
   loadSounds()
     .catch(() => {})
-    .then(() => { setStatus(''); speakIntro(beginPlay); });
+    .then(() => { setStatus(''); speakIntro(() => speakLevel(1, beginPlay)); });
 }
 
 function beginPlay() {
@@ -1242,8 +1243,6 @@ function beginPlay() {
 
   startAmbient();
   startBeeper();
-  speakLevel(1, () => {});  // level 1 announcement alongside game start
-
   spawnZombie();
   advanceTimer = setInterval(tick, 200);
 }
@@ -1261,6 +1260,7 @@ function triggerGameOver() {
   zombies = [];
   stopAmbient();
 
+  playBuffer('playerDeath', ctx().destination, 2.0);
   playGameOverSting();
   showFeedback(`GAME OVER  |  Score: ${score}`);
   speakGameOver(score);
