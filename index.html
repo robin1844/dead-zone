@@ -215,7 +215,18 @@ async function loadSounds() {
     try {
       const resp = await fetch(path);
       const raw  = await resp.arrayBuffer();
-      audioBuffers[key] = await ctx().decodeAudioData(raw);
+      let buf = await ctx().decodeAudioData(raw);
+      // Sum stereo to mono so the panner treats it as a true point source
+      if (buf.numberOfChannels > 1) {
+        const mono = ctx().createBuffer(1, buf.length, buf.sampleRate);
+        const out  = mono.getChannelData(0);
+        for (let ch = 0; ch < buf.numberOfChannels; ch++) {
+          const src = buf.getChannelData(ch);
+          for (let i = 0; i < buf.length; i++) out[i] += src[i] / buf.numberOfChannels;
+        }
+        buf = mono;
+      }
+      audioBuffers[key] = buf;
     } catch (e) { /* fall back to synthesised if file missing */ }
   }));
 }
@@ -627,7 +638,7 @@ const ZOMBIE_TYPES = [
 
 // ── Game state ─────────────────────────────────────────────────
 const MAX_AMMO  = 6;
-const AIM_WIDTH = 35;    // degrees either side counts as "in sights"
+const AIM_WIDTH = 55;    // degrees either side counts as "in sights"
 
 // Round determines max zombies: round 1 = 1, round 2 = 2, round 3+ = 3
 function maxZombiesForRound(r) { return Math.min(r, 3); }
