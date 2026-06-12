@@ -643,14 +643,19 @@ const AIM_WIDTH = 55;    // degrees either side counts as "in sights"
 // Round determines max zombies: round 1 = 1, round 2 = 2, round 3+ = 3
 function maxZombiesForRound(r) { return Math.min(r, 3); }
 
-let playerHeading  = 0;
-let zombies        = [];
-let ammo           = MAX_AMMO;
-let score          = 0;
-let round          = 1;
-let killsThisRound = 0;
-let gameRunning    = false;
-let advanceTimer   = null;
+let playerHeading    = 0;
+let gyroHeading      = 0;
+let lastMotionMs     = 0;
+let compassReady     = false;
+let sensorsAdded     = false;
+let zombies          = [];
+let ammo             = MAX_AMMO;
+let score            = 0;
+let round            = 1;
+let killsThisRound   = 0;
+let gameRunning      = false;
+let advanceTimer     = null;
+let beeperTimeout    = null;
 
 // ── Spawn zombie ───────────────────────────────────────────────
 function spawnZombie() {
@@ -675,26 +680,126 @@ function spawnZombie() {
   };
 
   zombies.push(z);
+  setTimeout(() => scheduleGrunt(z), 800 + Math.random() * 800);
   updateHUD();
 }
 
 function removeZombie(z) {
+  if (z.gruntTimer) clearTimeout(z.gruntTimer);
   stopGrowl(z.growl);
   z.panner.disconnect();
   zombies = zombies.filter(x => x.id !== z.id);
   updateHUD();
 }
 
-// ── Device orientation ─────────────────────────────────────────
-function onOrientation(e) {
-  if (e.alpha !== null) {
-    playerHeading = e.alpha;
-    zombies.forEach(z => {
-      const rel = ((z.angle - playerHeading) + 360) % 360;
-      updateZombieAudio(z, rel);
-    });
-    updateAmbientPanners();
+// ── Rhythmic grunt transients ──────────────────────────────────
+// A sharp bandpass noise burst every 1.5-2.5 s gives the brain
+// a transient onset to lock direction onto, unlike a continuous drone.
+function scheduleGrunt(z) {
+  if (!gameRunning || !zombies.find(x => x.id === z.id)) return;
+  const c   = ctx();
+  const dur = 0.14;
+  const buf = c.createBuffer(1, Math.floor(c.sampleRate * dur), c.sampleRate);
+  const d   = buf.getChannelData(0);
+  for (let i = 0; i < d.length; i++)
+    d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 2);
+
+  const src = c.createBufferSource();
+  src.buffer = buf;
+  const bp1 = c.createBiquadFilter();
+  bp1.type = 'bandpass'; bp1.frequency.value = z.pitch; bp1.Q.value = 3;
+  const bp2 = c.createBiquadFilter();
+  bp2.type = 'bandpass'; bp2.frequency.value = z.pitch * 2.5; bp2.Q.value = 2;
+  const g = c.createGain();
+  g.gain.value = 2.2;
+  src.connect(bp1); bp1.connect(g);
+  src.connect(bp2); bp2.connect(g);
+  g.connect(z.panner);
+  src.start();
+
+  z.gruntTimer = setTimeout(() => scheduleGrunt(z), 1500 + Math.random() * 1200);
+}
+
+// ── Target detector beeper ─────────────────────────────────────
+// Plays through the main output (not spatialized) — it's the gun's
+// sensor, not the zombie. Beeps fast when aimed at a zombie.
+function playTargetTick(vol) {
+  const c   = ctx();
+  const osc = c.createOscillator();
+  osc.type  = 'sine';
+  osc.frequency.value = 1450;
+  const g = c.createGain();
+  g.gain.setValueAtTime(vol, c.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.03);
+  osc.connect(g); g.connect(c.destination);
+  osc.start(); osc.stop(c.currentTime + 0.04);
+}
+
+function runBeeper() {
+  if (!gameRunning) return;
+  let minDiff = 180;
+  zombies.forEach(z => {
+    const rel  = ((z.angle - playerHeading) + 360) % 360;
+    const diff = rel > 180 ? 360 - rel : rel;
+    if (diff < minDiff) minDiff = diff;
+  });
+
+  const RANGE = 80;
+  let interval;
+  if (zombies.length === 0 || minDiff >= RANGE) {
+    interval = 2200;  // silent wait when nothing in arc
+  } else {
+    const t  = minDiff / RANGE;          // 0 = dead-on, 1 = edge
+    interval = 120 + t * 1180;           // 120 ms → 1300 ms
+    const vol = 0.18 + (1 - t) * 0.65;  // quiet at edge, loud on target
+    playTargetTick(vol);
   }
+  beeperTimeout = setTimeout(runBeeper, interval);
+}
+
+function startBeeper() { stopBeeper(); runBeeper(); }
+function stopBeeper()  { if (beeperTimeout) { clearTimeout(beeperTimeout); beeperTimeout = null; } }
+
+// ── Device orientation + gyro fusion ──────────────────────────
+// Compass (alpha) is accurate but lag-smoothed by iOS.
+// Gyroscope (rotationRate) is near-instant but drifts.
+// Strategy: integrate gyro for fast response; nudge it toward compass each tick.
+
+function applyHeading() {
+  zombies.forEach(z => {
+    const rel = ((z.angle - playerHeading) + 360) % 360;
+    updateZombieAudio(z, rel);
+  });
+  updateAmbientPanners();
+}
+
+function onOrientation(e) {
+  if (e.alpha === null) return;
+  if (!compassReady) {
+    gyroHeading   = e.alpha;
+    playerHeading = e.alpha;
+    compassReady  = true;
+  } else {
+    // Gently pull gyro toward compass to correct drift (8% per compass update)
+    let diff = e.alpha - gyroHeading;
+    if (diff >  180) diff -= 360;
+    if (diff < -180) diff += 360;
+    gyroHeading = (gyroHeading + diff * 0.08 + 360) % 360;
+  }
+}
+
+function onMotion(e) {
+  if (!compassReady || !e.rotationRate) return;
+  const now = performance.now();
+  if (lastMotionMs > 0) {
+    const dt = (now - lastMotionMs) / 1000;
+    // On iOS portrait: clockwise rotation increases compass heading;
+    // rotationRate.alpha is negative for clockwise, so negate to match.
+    gyroHeading   = (gyroHeading - e.rotationRate.alpha * dt + 360) % 360;
+    playerHeading = gyroHeading;
+    applyHeading();
+  }
+  lastMotionMs = now;
 }
 
 
@@ -848,16 +953,24 @@ function onStartPressed() {
     src.start();
   });
 
-  // 2. Request device orientation permission (iOS 13+ requires this in a user gesture).
-  if (typeof DeviceOrientationEvent !== 'undefined' &&
-      typeof DeviceOrientationEvent.requestPermission === 'function') {
-    DeviceOrientationEvent.requestPermission()
-      .then(state => {
-        if (state === 'granted') window.addEventListener('deviceorientation', onOrientation);
-      })
-      .catch(() => {});
-  } else {
-    window.addEventListener('deviceorientation', onOrientation);
+  // 2. Request device orientation/motion permission (iOS 13+ requires this in a user gesture).
+  //    One requestPermission call covers both deviceorientation and devicemotion on iOS.
+  if (!sensorsAdded) {
+    sensorsAdded = true;
+    if (typeof DeviceOrientationEvent !== 'undefined' &&
+        typeof DeviceOrientationEvent.requestPermission === 'function') {
+      DeviceOrientationEvent.requestPermission()
+        .then(state => {
+          if (state === 'granted') {
+            window.addEventListener('deviceorientation', onOrientation);
+            window.addEventListener('devicemotion', onMotion);
+          }
+        })
+        .catch(() => {});
+    } else {
+      window.addEventListener('deviceorientation', onOrientation);
+      window.addEventListener('devicemotion', onMotion);
+    }
   }
 
   // 3. Fire ARIA live region for VO users (invisible visually).
@@ -889,6 +1002,7 @@ function beginPlay() {
   updateHUD();
 
   startAmbient();
+  startBeeper();
 
   spawnZombie();
   setTimeout(spawnZombie, 1800);
@@ -901,7 +1015,12 @@ function triggerGameOver() {
   if (!gameRunning) return;
   gameRunning = false;
   clearInterval(advanceTimer);
-  zombies.forEach(z => { stopGrowl(z.growl); z.panner.disconnect(); });
+  stopBeeper();
+  zombies.forEach(z => {
+    if (z.gruntTimer) clearTimeout(z.gruntTimer);
+    stopGrowl(z.growl);
+    z.panner.disconnect();
+  });
   zombies = [];
   stopAmbient();
 
