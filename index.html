@@ -290,7 +290,7 @@ function updateZombieAudio(z, relDeg) {
 
 // ── Sound: gunshot ─────────────────────────────────────────────
 function playGunshot() {
-  if (playBuffer('gunshot', null, 1.2)) return;
+  if (playBuffer('gunshot', null, 5.0)) return;
   // Synthesised fallback
   const c   = ctx();
   const buf = c.createBuffer(1, c.sampleRate * 0.15, c.sampleRate);
@@ -335,7 +335,9 @@ function playReloadSound() {
   if (audioBuffers.reloadClick && audioBuffers.reloadLatch) {
     const s1 = c.createBufferSource(); s1.buffer = audioBuffers.reloadClick;
     const s2 = c.createBufferSource(); s2.buffer = audioBuffers.reloadLatch;
-    s1.connect(c.destination); s2.connect(c.destination);
+    const rg = c.createGain(); rg.gain.value = 5.0;
+    rg.connect(c.destination);
+    s1.connect(rg); s2.connect(rg);
     s1.start(c.currentTime);
     s2.start(c.currentTime + 0.35);
     return;
@@ -482,28 +484,44 @@ function playHit(panner) {
   }
 }
 
-// ── Sound: zombie death ────────────────────────────────────────
-function playBodyHit() {
-  // 1/3 chance: bodyHitA (BewareOfTheElmo 739009)
-  // 1/3 chance: bodyHitB (your edited clip B - drop in as sounds/body_hit_b.mp3)
-  // 1/3 chance: bodyHitC (your edited clip C - drop in as sounds/body_hit_c.mp3)
-  const roll = Math.random();
-  const key  = roll < 0.333 ? 'bodyHitA'
-             : roll < 0.667 ? 'bodyHitB'
-             :                'bodyHitC';
-  const buf  = audioBuffers[key] || audioBuffers.bodyHitA; // fallback to A until B/C arrive
-  if (!buf) return;
+// ── Sound: bullet hit thud (non-lethal) ───────────────────────
+function playHitThud() {
   const c   = ctx();
-  const src = c.createBufferSource();
+  const buf = c.createBuffer(1, Math.floor(c.sampleRate * 0.12), c.sampleRate);
+  const d   = buf.getChannelData(0);
+  for (let i = 0; i < d.length; i++)
+    d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 1.8);
+  const src  = c.createBufferSource();
   src.buffer = buf;
+  const lp = c.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = 180;
   const gain = c.createGain();
-  gain.gain.value = 2.0;
-  src.connect(gain);
-  gain.connect(c.destination); // body hits the floor - plays centre, not spatialized
+  gain.gain.setValueAtTime(3.0, c.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.12);
+  src.connect(lp); lp.connect(gain); gain.connect(c.destination);
   src.start();
 }
 
-function playDeath(panner, pitch) {
+// ── Sound: zombie death ────────────────────────────────────────
+function playBodyHit(distance) {
+  // Pick randomly from whichever body-hit files actually loaded
+  const candidates = ['bodyHitA', 'bodyHitB', 'bodyHitC'].filter(k => audioBuffers[k]);
+  if (!candidates.length) return;
+  const key = candidates[Math.floor(Math.random() * candidates.length)];
+  const c   = ctx();
+  const src = c.createBufferSource();
+  src.buffer = audioBuffers[key];
+  const gain = c.createGain();
+  // Far zombie (distance ~18) = quieter thud; close (distance ~2) = loud
+  const distVol = Math.max(0.3, Math.min(1, 3 / Math.max(distance, 1)));
+  gain.gain.value = 2.5 * distVol;
+  src.connect(gain);
+  gain.connect(c.destination);
+  src.start();
+}
+
+function playDeath(panner, pitch, distance) {
   // Zombie death cry through the spatial panner
   if (audioBuffers.zombieDeath) {
     const src  = ctx().createBufferSource();
@@ -530,7 +548,7 @@ function playDeath(panner, pitch) {
     osc.start(); osc.stop(c.currentTime + 1.05);
   }
   // Body hits the floor ~400 ms after the death cry starts
-  setTimeout(playBodyHit, 400);
+  setTimeout(() => playBodyHit(distance || 5), 400);
 }
 
 // ── Sound: game-over sting ─────────────────────────────────────
@@ -907,7 +925,7 @@ function shoot() {
   if (t) {
     t.hp--;
     if (t.hp <= 0) {
-      playDeath(t.panner, t.pitch);
+      playDeath(t.panner, t.pitch, t.distance);
       score++;
       killsThisRound++;
       showFeedback('Zombie down!');
@@ -920,6 +938,7 @@ function shoot() {
       }
       setTimeout(() => { if (gameRunning) spawnZombie(); }, 1000 + Math.random() * 1000);
     } else {
+      playHitThud();
       showFeedback('Hit!');
     }
   } else {
