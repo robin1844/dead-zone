@@ -36,6 +36,8 @@
     text-align: center;
   }
 
+  #last-score { font-size: 1.1rem; color: #aaa; margin: 0.4rem 0 0; min-height: 1.4em; }
+
   #start-btn {
     font-size: 2rem;
     padding: 1.2rem 3rem;
@@ -155,6 +157,7 @@
 <div id="start-screen">
   <h1 id="game-title">Dead Zone</h1>
   <button id="start-btn">Start Game</button>
+  <p id="last-score" aria-live="polite"></p>
   <p id="start-instructions">
     Turn your phone to face the zombies.<br>
     Tap to shoot &bull; Hold for rapid fire<br>
@@ -219,6 +222,14 @@ async function loadSounds() {
     bodyHitC:     'sounds/body_hit_c.mp3',
     reloadClick:  'sounds/reload_click.ogg',
     reloadLatch:  'sounds/reload_latch.ogg',
+    annIntro:     'sounds/ann_intro.wav',
+    annLevel1:    'sounds/ann_level1.wav',
+    annLevel2:    'sounds/ann_level2.wav',
+    annLevel3:    'sounds/ann_level3.wav',
+    annLevel4:    'sounds/ann_level4.wav',
+    annBoss:      'sounds/ann_boss.wav',
+    annGameOver:  'sounds/ann_gameover.wav',
+    annVictory:   'sounds/ann_victory.wav',
   };
   await Promise.all(Object.entries(files).map(async ([key, path]) => {
     try {
@@ -517,12 +528,7 @@ function spawnBoss() {
   zombies.push(z);
   setTimeout(() => scheduleGrunt(z), 1200);
   showFeedback('THE BOSS APPROACHES!');
-  if (window.speechSynthesis) {
-    window.speechSynthesis.cancel();
-    const utt = new SpeechSynthesisUtterance('The boss is here.');
-    utt.rate = 0.65; utt.pitch = 0.1; utt.volume = 1;
-    window.speechSynthesis.speak(utt);
-  }
+  playAnnouncement('annBoss');
   updateHUD();
 }
 
@@ -546,7 +552,7 @@ function playBossBodyHit() {
 
 function enterBossLevel() {
   round = 4; killsThisRound = 0; bossSpawned = false;
-  speakLevel(4, () => {
+  playAnnouncement('annLevel4', () => {
     for (let i = 0; i < 5; i++)
       setTimeout(() => { if (gameRunning) spawnZombie(); }, i * 700);
   });
@@ -564,13 +570,8 @@ function triggerVictory() {
   zombies = [];
   stopAmbient();
   showFeedback('VICTORY! You survived the Dead Zone!');
-  if (window.speechSynthesis) {
-    window.speechSynthesis.cancel();
-    const utt = new SpeechSynthesisUtterance(
-      `Victory! You survived the dead zone. Final score: ${score}.`);
-    utt.rate = 0.8; utt.pitch = 0.5; utt.volume = 1;
-    window.speechSynthesis.speak(utt);
-  }
+  playAnnouncement('annVictory');
+  document.getElementById('last-score').textContent = `Last game: ${score} kill${score !== 1 ? 's' : ''} — Victory!`;
   setTimeout(() => {
     document.getElementById('game-screen').style.display  = 'none';
     document.getElementById('start-screen').style.display = 'flex';
@@ -668,57 +669,21 @@ function playGameOverSting() {
   });
 }
 
-// ── Speech helpers ─────────────────────────────────────────────
-// On iOS, AudioContext holds the audio session and silences speechSynthesis.
-// Suspending the context first releases the session so speech can be heard.
-function suspendForSpeech(utt, fallbackMs, onDone) {
-  const resume = () => { try { if (audioCtx) audioCtx.resume(); } catch (e) {} };
-  let called = false;
-  const finish = () => {
-    resume();
-    if (!called) { called = true; if (onDone) onDone(); }
-  };
-  const fb = setTimeout(finish, fallbackMs);
-  utt.onend   = () => { clearTimeout(fb); finish(); };
-  utt.onerror = () => { clearTimeout(fb); finish(); };
-  const speak = () => {
-    window.speechSynthesis.cancel();
-    setTimeout(() => window.speechSynthesis.speak(utt), 50);
-  };
-  if (audioCtx && audioCtx.state === 'running') {
-    audioCtx.suspend().then(speak).catch(speak);
-  } else {
-    speak();
-  }
-}
-
-function speakIntro(onDone) {
-  if (!window.speechSynthesis) { onDone(); return; }
-  const utt = new SpeechSynthesisUtterance('Entering the zone. Stay alert.');
-  utt.rate = 0.75; utt.pitch = 0.3; utt.volume = 1;
-  suspendForSpeech(utt, 4000, onDone);
-}
-
-function speakLevel(r, onDone) {
+// ── Announcement playback (pre-recorded WAV, avoids iOS speechSynthesis issues)
+function playAnnouncement(key, onDone) {
   onDone = onDone || (() => {});
-  if (!window.speechSynthesis) { onDone(); return; }
-  const texts = {
-    1: 'Level 1. One zombie attacks at a time. Three kills needed to advance.',
-    2: 'Level 1 complete. Entering level 2. Two zombies attack at once. Three kills needed.',
-    3: 'Level 2 complete. Entering level 3. Three zombies attack at once. Three kills needed.',
-    4: 'Level 3 complete. Boss level. Five zombies attack first. Destroy them all, then face the boss.',
-  };
-  const utt = new SpeechSynthesisUtterance(texts[r] || '');
-  utt.rate = 0.8; utt.pitch = 0.3; utt.volume = 1;
-  const ms = 3000 + (texts[r] || '').length * 55;
-  suspendForSpeech(utt, ms, onDone);
-}
-
-function speakGameOver(score) {
-  if (!window.speechSynthesis) return;
-  const utt = new SpeechSynthesisUtterance(`Game over. You took down ${score} zombie${score !== 1 ? 's' : ''}.`);
-  utt.rate = 0.8; utt.pitch = 0.4; utt.volume = 1;
-  suspendForSpeech(utt, 6000, null);
+  if (!audioBuffers[key]) { setTimeout(onDone, 0); return; }
+  const src  = ctx().createBufferSource();
+  src.buffer = audioBuffers[key];
+  const gain = ctx().createGain();
+  gain.gain.value = 2.0;
+  src.connect(gain);
+  gain.connect(ctx().destination);
+  let called = false;
+  const dur = audioBuffers[key].duration * 1000 + 300;
+  const fb  = setTimeout(() => { if (!called) { called = true; onDone(); } }, dur);
+  src.onended = () => { clearTimeout(fb); if (!called) { called = true; onDone(); } };
+  src.start();
 }
 
 // ── Ambient fixed-position sounds ─────────────────────────────
@@ -1083,7 +1048,7 @@ function shoot() {
         } else if (killsThisRound >= 3) {
           round++;
           killsThisRound = 0;
-          speakLevel(round, () => {});
+          playAnnouncement('annLevel' + round);
           showFeedback(`Level ${round}!`);
           setTimeout(() => { if (gameRunning) spawnZombie(); }, 900 + Math.random() * 600);
         } else {
@@ -1232,7 +1197,7 @@ function onStartPressed() {
   // 5. Load audio files, then speak intro, then begin play.
   loadSounds()
     .catch(() => {})
-    .then(() => { setStatus(''); speakIntro(() => speakLevel(1, beginPlay)); });
+    .then(() => { setStatus(''); playAnnouncement('annIntro', () => playAnnouncement('annLevel1', beginPlay)); });
 }
 
 function beginPlay() {
@@ -1268,7 +1233,8 @@ function triggerGameOver() {
   playBuffer('playerDeath', ctx().destination, 2.0);
   playGameOverSting();
   showFeedback(`GAME OVER  |  Score: ${score}`);
-  setTimeout(() => speakGameOver(score), 2500);
+  setTimeout(() => playAnnouncement('annGameOver'), 2000);
+  document.getElementById('last-score').textContent = `Last game: ${score} kill${score !== 1 ? 's' : ''}`;
 
   setTimeout(() => {
     document.getElementById('game-screen').style.display  = 'none';
