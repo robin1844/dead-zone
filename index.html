@@ -296,9 +296,10 @@ function setPannerPos(panner, relDeg, distance) {
 function updateZombieAudio(z, relDeg) {
   setPannerPos(z.panner, relDeg, z.distance);
   const t   = ctx().currentTime;
-  const wet = Math.min(0.7, calcAngleReverb(relDeg) + calcDistanceReverb(z.distance));
+  const wet = Math.min(0.85, calcAngleReverb(relDeg) + calcDistanceReverb(z.distance));
   z.growl.spatialFilt.frequency.setValueAtTime(calcSpatialCutoff(relDeg), t);
   z.growl.reverbGain.gain.setValueAtTime(wet, t);
+  z.growl.reverb2Gain.gain.setValueAtTime(wet * 0.55, t);
   z.growl.gain.gain.setValueAtTime(1.62 * calcDirGain(relDeg, z.distance), t);
 }
 
@@ -387,8 +388,8 @@ function calcAngleReverb(relDeg) {
 }
 
 function calcDistanceReverb(distance) {
-  const t = Math.max(0, Math.min(1, (distance - 2) / 16));
-  return 0.35 * t;
+  const t = Math.max(0, Math.min(1, (distance - 2) / 14));
+  return 0.72 * t;   // 0 when ≤2 units away, full echo at 16+ units
 }
 
 // dirGain combines rear attenuation and close-proximity boost.
@@ -423,15 +424,23 @@ function startGrowl(panner, soundKey, pitch) {
   spatialFilt.frequency.value = 18000;
   spatialFilt.Q.value = 0.7;
 
-  const delay      = c.createDelay(0.1);
-  delay.delayTime.value = 0.028;
+  const delay      = c.createDelay(0.15);
+  delay.delayTime.value = 0.06;
   const reverbGain = c.createGain();
   reverbGain.gain.value = 0;
+
+  const delay2      = c.createDelay(0.25);
+  delay2.delayTime.value = 0.13;
+  const reverb2Gain = c.createGain();
+  reverb2Gain.gain.value = 0;
 
   gain.connect(spatialFilt);
   gain.connect(delay);
   delay.connect(reverbGain);
   reverbGain.connect(spatialFilt);
+  gain.connect(delay2);
+  delay2.connect(reverb2Gain);
+  reverb2Gain.connect(spatialFilt);
   spatialFilt.connect(panner);
 
   let stopped    = false;
@@ -467,7 +476,7 @@ function startGrowl(panner, soundKey, pitch) {
   playLoop();
 
   return {
-    gain, spatialFilt, reverbGain,
+    gain, spatialFilt, reverbGain, reverb2Gain,
     stop() {
       stopped = true;
       if (currentSrc) { try { currentSrc.stop(); } catch(e) {} }
