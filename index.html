@@ -293,13 +293,52 @@ function setPannerPos(panner, relDeg, distance) {
   panner.positionZ.setValueAtTime(-Math.cos(rad) * distance, t);
 }
 
+// ── Shared cavernous-hall reverb ───────────────────────────────
+// A single convolution reverb shared by every zombie. The impulse
+// response is a long, exponentially-decaying noise tail that makes the
+// space feel like a large stone hall. Each zombie sends a distance-
+// dependent amount into it: far zombies are drenched (sound distant and
+// echoey), near zombies are almost dry (sound right on top of you).
+let sharedReverb = null;
+function getReverb() {
+  if (sharedReverb) return sharedReverb;
+  const c = ctx();
+  const convolver = c.createConvolver();
+  convolver.buffer = makeImpulseResponse(2.8, 2.2);
+  const out = c.createGain();
+  out.gain.value = 0.9;
+  convolver.connect(out);
+  out.connect(c.destination);
+  sharedReverb = convolver;
+  return sharedReverb;
+}
+
+function makeImpulseResponse(seconds, decay) {
+  const c    = ctx();
+  const rate = c.sampleRate;
+  const len  = Math.floor(rate * seconds);
+  const ir   = c.createBuffer(2, len, rate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = ir.getChannelData(ch);
+    for (let i = 0; i < len; i++) {
+      // Exponentially-decaying noise = diffuse reverb tail
+      const env = Math.pow(1 - i / len, decay);
+      d[i] = (Math.random() * 2 - 1) * env;
+    }
+    // A handful of discrete early reflections gives the space its "size"
+    [0.013, 0.027, 0.041, 0.059, 0.083].forEach((rt, k) => {
+      const idx = Math.floor(rt * rate);
+      if (idx < len) d[idx] += (0.7 - k * 0.11) * (ch === 0 ? 1 : -1);
+    });
+  }
+  return ir;
+}
+
 function updateZombieAudio(z, relDeg) {
   setPannerPos(z.panner, relDeg, z.distance);
-  const t   = ctx().currentTime;
-  const wet = Math.min(0.85, calcAngleReverb(relDeg) + calcDistanceReverb(z.distance));
+  const t = ctx().currentTime;
   z.growl.spatialFilt.frequency.setValueAtTime(calcSpatialCutoff(relDeg), t);
-  z.growl.reverbGain.gain.setValueAtTime(wet, t);
-  z.growl.reverb2Gain.gain.setValueAtTime(wet * 0.55, t);
+  z.growl.reverbSend.gain.setValueAtTime(calcReverbSend(relDeg, z.distance), t);
   z.growl.gain.gain.setValueAtTime(1.62 * calcDirGain(relDeg, z.distance), t);
 }
 
@@ -374,22 +413,27 @@ function playReloadSound() {
   });
 }
 
-// ── Spatial cues: low-pass filter + reverb wet level ──────────
+// ── Spatial cues: low-pass filter (front/back) + reverb (distance) ──
+// Front/back: equalpower panning folds front and back together (a sound
+// dead-ahead and dead-behind pan identically), so the ONLY front/back
+// cue is timbre. Front = bright and present; behind = muffled, as if the
+// sound has to travel around your head. A steep curve makes it obvious.
 function calcSpatialCutoff(relDeg) {
   const rad = (relDeg * Math.PI) / 180;
-  const t   = (1 - Math.cos(rad)) / 2; // 0 = front, 1 = back
-  return 18000 - 17700 * t;            // 18000 Hz front → 300 Hz back (very muffled)
+  let   t   = (1 - Math.cos(rad)) / 2;         // 0 = front, 1 = back
+  t = Math.pow(t, 0.6);                        // bias so the side/rear muffles sooner
+  return 19000 - 18400 * t;                    // 19000 Hz front → 600 Hz behind
 }
 
-function calcAngleReverb(relDeg) {
-  const rad = (relDeg * Math.PI) / 180;
-  const t   = (1 - Math.cos(rad)) / 2; // 0 = front, 1 = back
-  return 0.4 * t;                      // 0 = dry front, 0.4 = echoed back
-}
-
-function calcDistanceReverb(distance) {
-  const t = Math.max(0, Math.min(1, (distance - 2) / 14));
-  return 0.72 * t;   // 0 when ≤2 units away, full echo at 16+ units
+// Distance: the wet/dry balance is how ears judge distance in a big room.
+// Far = drenched in reverb (the direct sound is faint, the hall rings);
+// near = almost completely dry (the growl is right in your face).
+// Behind adds a little extra wash, reinforcing the front/back read.
+function calcReverbSend(relDeg, distance) {
+  const distT = Math.max(0, Math.min(1, (distance - 1.5) / 15)); // 0 near → 1 far
+  const rad   = (relDeg * Math.PI) / 180;
+  const rearT = (1 - Math.cos(rad)) / 2;
+  return 1.6 * distT + 0.35 * rearT;
 }
 
 // dirGain combines rear attenuation and close-proximity boost.
@@ -421,27 +465,20 @@ function startGrowl(panner, soundKey, pitch) {
 
   const spatialFilt = c.createBiquadFilter();
   spatialFilt.type  = 'lowpass';
-  spatialFilt.frequency.value = 18000;
+  spatialFilt.frequency.value = 19000;
   spatialFilt.Q.value = 0.7;
 
-  const delay      = c.createDelay(0.15);
-  delay.delayTime.value = 0.06;
-  const reverbGain = c.createGain();
-  reverbGain.gain.value = 0;
-
-  const delay2      = c.createDelay(0.25);
-  delay2.delayTime.value = 0.13;
-  const reverb2Gain = c.createGain();
-  reverb2Gain.gain.value = 0;
-
+  // Direct (dry) path: source → gain → front/back filter → panner (L/R)
   gain.connect(spatialFilt);
-  gain.connect(delay);
-  delay.connect(reverbGain);
-  reverbGain.connect(spatialFilt);
-  gain.connect(delay2);
-  delay2.connect(reverb2Gain);
-  reverb2Gain.connect(spatialFilt);
   spatialFilt.connect(panner);
+
+  // Wet path: a distance-driven send into the shared cavernous reverb.
+  // Tapped pre-filter so the hall rings full and bright regardless of
+  // where the zombie is — the reverb IS the room, it comes from all around.
+  const reverbSend = c.createGain();
+  reverbSend.gain.value = 0;
+  gain.connect(reverbSend);
+  reverbSend.connect(getReverb());
 
   let stopped    = false;
   let currentSrc = null;
@@ -476,10 +513,11 @@ function startGrowl(panner, soundKey, pitch) {
   playLoop();
 
   return {
-    gain, spatialFilt, reverbGain, reverb2Gain,
+    gain, spatialFilt, reverbSend,
     stop() {
       stopped = true;
       if (currentSrc) { try { currentSrc.stop(); } catch(e) {} }
+      try { reverbSend.disconnect(); } catch(e) {}
     }
   };
 }
