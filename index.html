@@ -160,8 +160,8 @@
   <p id="last-score" aria-live="polite"></p>
   <p id="start-instructions">
     Turn your phone to face the zombies.<br>
-    Tap to shoot &bull; Hold for rapid fire<br>
-    Double-tap to reload &bull; Triple-tap to exit
+    Tap to shoot, hold for rapid fire<br>
+    Double-tap to reload, triple-tap to exit
   </p>
 </div>
 
@@ -227,6 +227,7 @@ async function loadSounds() {
     annLevel2:    'sounds/ann_level2.wav',
     annLevel3:    'sounds/ann_level3.wav',
     annLevel4:    'sounds/ann_level4.wav',
+    annLevel5:    'sounds/ann_level5.wav',
     annBoss:      'sounds/ann_boss.wav',
     annGameOver:  'sounds/ann_gameover.wav',
     annVictory:   'sounds/ann_victory.wav',
@@ -598,8 +599,8 @@ function playBossBodyHit() {
 }
 
 function enterBossLevel() {
-  round = 4; killsThisRound = 0; bossSpawned = false;
-  playAnnouncement('annLevel4', () => {
+  round = 5; killsThisRound = 0; bossSpawned = false;
+  playAnnouncement('annLevel5', () => {
     for (let i = 0; i < 5; i++)
       setTimeout(() => { if (gameRunning) spawnZombie(); }, i * 700);
   });
@@ -739,6 +740,7 @@ const AMBIENT_SOURCES = [
   { angle: 60,  label: 'beep',  type: 'beep' },
   { angle: 200, label: 'drip',  type: 'drip' },
   { angle: 330, label: 'hum',   type: 'hum'  },
+  { angle: 140, label: 'fan',   type: 'fan', dist: 15 },
 ];
 let ambientNodes = [];
 
@@ -746,7 +748,8 @@ function startAmbient() {
   AMBIENT_SOURCES.forEach(src => {
     const panner = createPanner();
     const relDeg = ((src.angle - playerHeading) + 360) % 360;
-    setPannerPos(panner, relDeg, 8); // fixed distance
+    const dist   = src.dist || 8;
+    setPannerPos(panner, relDeg, dist);
 
     if (src.type === 'hum') {
       // Continuous low electrical hum
@@ -807,6 +810,55 @@ function startAmbient() {
       }
       const dripNode = { panner, worldAngle: src.angle, nodes: [gain], timer: setTimeout(doDrip, 1200) };
       ambientNodes.push(dripNode);
+
+    } else if (src.type === 'fan') {
+      // Industrial fan / AC unit: a steady motor rumble plus an airy
+      // whoosh that pulses slowly with the blades. The broadband mid
+      // content makes it easy to pin down as a distinct point in space,
+      // reinforcing the sense of being in a real room.
+      const c   = ctx();
+      const out = c.createGain();
+      out.gain.value = 0.6;
+      out.connect(panner);
+
+      // Motor rumble
+      const motor = c.createOscillator();
+      motor.type  = 'sawtooth';
+      motor.frequency.value = 94;
+      const motorLp = c.createBiquadFilter();
+      motorLp.type  = 'lowpass';
+      motorLp.frequency.value = 240;
+      const motorGain = c.createGain();
+      motorGain.gain.value = 0.16;
+      motor.connect(motorLp); motorLp.connect(motorGain); motorGain.connect(out);
+      motor.start();
+
+      // Airy whoosh: looping band-passed noise
+      const noiseBuf = c.createBuffer(1, c.sampleRate * 2, c.sampleRate);
+      const ndat     = noiseBuf.getChannelData(0);
+      for (let i = 0; i < ndat.length; i++) ndat[i] = Math.random() * 2 - 1;
+      const noise = c.createBufferSource();
+      noise.buffer = noiseBuf; noise.loop = true;
+      const noiseBp = c.createBiquadFilter();
+      noiseBp.type  = 'bandpass';
+      noiseBp.frequency.value = 620;
+      noiseBp.Q.value = 0.9;
+      const noiseGain = c.createGain();
+      noiseGain.gain.value = 0.5;
+      noise.connect(noiseBp); noiseBp.connect(noiseGain); noiseGain.connect(out);
+      noise.start();
+
+      // Slow blade-pass pulsing on the whoosh
+      const lfo = c.createOscillator();
+      lfo.type  = 'sine';
+      lfo.frequency.value = 0.8;
+      const lfoGain = c.createGain();
+      lfoGain.gain.value = 0.18;
+      lfo.connect(lfoGain); lfoGain.connect(noiseGain.gain);
+      lfo.start();
+
+      ambientNodes.push({ panner, worldAngle: src.angle,
+        nodes: [motor, motorLp, motorGain, noise, noiseBp, noiseGain, lfo, lfoGain, out] });
     }
   });
 }
@@ -827,7 +879,8 @@ function updateAmbientPanners() {
     if (seen.has(n.worldAngle)) return;
     seen.add(n.worldAngle);
     const rel = ((n.worldAngle - playerHeading) + 360) % 360;
-    setPannerPos(n.panner, rel, 8);
+    const src = AMBIENT_SOURCES.find(s => s.angle === n.worldAngle);
+    setPannerPos(n.panner, rel, (src && src.dist) || 8);
   });
 }
 
@@ -847,8 +900,16 @@ const MAX_AMMO    = 6;
 const HIT_DEG     = 20;   // aim width AND lock-on zone (kept in sync - task 7)
 const TARGET_DIST = 16;   // targeting only active within this distance
 
-// Round 1-3: 1/2/3 zombies. Round 4 (boss): 5 zombies + boss.
-function maxZombiesForRound(r) { return r === 4 ? 5 : Math.min(r, 3); }
+// Rounds 1-3: 1/2/3 zombies. Round 4: 4 at once. Round 5 (boss): 5 + boss.
+function maxZombiesForRound(r) {
+  if (r >= 5) return 5;
+  if (r === 4) return 4;
+  return Math.min(r, 3);
+}
+
+// Zombies advance slower in the crowded later levels (4 & boss) so they
+// are survivable. Returns the per-tick distance step.
+function advanceSpeedForRound(r) { return r >= 4 ? 0.108 : 0.144; }
 
 let playerHeading    = 0;
 let gyroHeading      = 0;
@@ -886,7 +947,7 @@ function spawnZombie() {
     distance,
     hp:       type.hp,
     pitch:    type.pitch,
-    speed:    0.144,
+    speed:    advanceSpeedForRound(round),
     isBoss:   false,
     panner,
     growl,
@@ -1082,15 +1143,15 @@ function shoot() {
       showFeedback('Zombie down!');
       removeZombie(t);
 
-      // Boss level: check whether to spawn boss (task 4)
-      if (round === 4 && !bossSpawned) {
+      // Boss level (5): the boss only enters once 4 of the 5 zombies are down
+      if (round === 5 && !bossSpawned) {
         const regularLeft = zombies.filter(z => !z.isBoss).length;
-        if (regularLeft <= 2) spawnBoss();
+        if (regularLeft <= 1) spawnBoss();
       }
 
-      // Level advancement (tasks 2 & 3)
-      if (round <= 3) {
-        if (killsThisRound >= 3 && round === 3) {
+      // Level advancement (levels 1-4)
+      if (round <= 4) {
+        if (killsThisRound >= 3 && round === 4) {
           enterBossLevel();
         } else if (killsThisRound >= 3) {
           round++;
@@ -1102,7 +1163,7 @@ function shoot() {
           setTimeout(() => { if (gameRunning) spawnZombie(); }, 1000 + Math.random() * 1000);
         }
       }
-      // Round 4: no auto-respawn - fixed zombie count
+      // Round 5: no auto-respawn - fixed zombie count
     } else {
       playHitThud();
       showFeedback('Hit!');
