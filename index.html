@@ -445,11 +445,13 @@ function calcDirGain(relDeg, distance) {
   const rearT    = (1 - Math.cos(rad)) / 2;          // 0 = front, 1 = back
   const rearAtten = 1.0 - 0.75 * rearT;              // 1.0 front → 0.25 back
 
-  // Close boost: zombie within 4 units sounds dramatically louder
+  // Close boost: ramps up hard in the final approach so a zombie about to
+  // eat you is right in your face - as loud as, or louder than, the eating
+  // sound itself. The curve biases the swell toward the last few units.
   const closeT   = Math.max(0, Math.min(1, (8 - distance) / 6.5));
-  const closeBoost = 1.0 + 3.5 * closeT;             // 1.0 at distance 8+ → 4.5 at distance 1.5
+  const closeBoost = 1.0 + 6.0 * Math.pow(closeT, 1.3);  // 1.0 far → ~7x point-blank
 
-  return Math.min(rearAtten * closeBoost, 4.0);
+  return Math.min(rearAtten * closeBoost, 7.0);
 }
 
 function pitchToRate(pitch) {
@@ -911,6 +913,12 @@ function maxZombiesForRound(r) {
 // are survivable. Returns the per-tick distance step.
 function advanceSpeedForRound(r) { return r >= 4 ? 0.108 : 0.144; }
 
+// Kills required to clear each level. Level 5 (boss): 15 with the boss
+// arriving once 12 zombies are down.
+const KILLS_NEEDED = { 1: 5, 2: 10, 3: 10, 4: 15, 5: 15 };
+const BOSS_ENTERS_AFTER = 12;
+function killsNeededForRound(r) { return KILLS_NEEDED[r] || 10; }
+
 let playerHeading    = 0;
 let gyroHeading      = 0;
 let lastMotionMs     = 0;
@@ -1143,17 +1151,23 @@ function shoot() {
       showFeedback('Zombie down!');
       removeZombie(t);
 
-      // Boss level (5): the boss only enters once 4 of the 5 zombies are down
-      if (round === 5 && !bossSpawned) {
-        const regularLeft = zombies.filter(z => !z.isBoss).length;
-        if (regularLeft <= 1) spawnBoss();
+      // Boss level (5): regulars keep coming until 12 are down, then the
+      // boss enters. Once the boss is out, stop respawning so the player
+      // can focus on it; killing the boss is victory.
+      if (round === 5) {
+        if (killsThisRound >= BOSS_ENTERS_AFTER && !bossSpawned) {
+          spawnBoss();
+        } else if (!bossSpawned) {
+          setTimeout(() => { if (gameRunning) spawnZombie(); }, 700 + Math.random() * 700);
+        }
       }
 
       // Level advancement (levels 1-4)
       if (round <= 4) {
-        if (killsThisRound >= 3 && round === 4) {
+        const need = killsNeededForRound(round);
+        if (killsThisRound >= need && round === 4) {
           enterBossLevel();
-        } else if (killsThisRound >= 3) {
+        } else if (killsThisRound >= need) {
           round++;
           killsThisRound = 0;
           playAnnouncement('annLevel' + round);
@@ -1163,7 +1177,6 @@ function shoot() {
           setTimeout(() => { if (gameRunning) spawnZombie(); }, 1000 + Math.random() * 1000);
         }
       }
-      // Round 5: no auto-respawn - fixed zombie count
     } else {
       playHitThud();
       showFeedback('Hit!');
