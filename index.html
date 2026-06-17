@@ -549,18 +549,36 @@ function startGrowl(panner, soundKey, pitch) {
         if (!stopped) setTimeout(playLoop, 1200 + Math.random() * 2000);
       };
     } else {
-      // Synthesised fallback - oscillator runs until stopped
-      const osc  = c.createOscillator();
-      osc.type   = 'sawtooth';
-      osc.frequency.value = pitch;
+      // Synthesised fallback (used only if the growl file failed to decode,
+      // e.g. on a browser whose MP3 decoder rejects the clip). This is a
+      // SHORT, enveloped groan pulse followed by a pause and reschedule -
+      // mirroring the file loop - so it can never become a continuous
+      // drone/buzz. A slow downward pitch glide and a soft sine sub make
+      // it read as a groan rather than a raw tone.
+      const t0  = c.currentTime;
+      const dur = 1.1;
+      const osc = c.createOscillator();
+      osc.type  = 'sawtooth';
+      osc.frequency.setValueAtTime(pitch * 1.06, t0);
+      osc.frequency.linearRampToValueAtTime(pitch * 0.9, t0 + dur);
+      const sub = c.createOscillator();
+      sub.type  = 'sine';
+      sub.frequency.value = pitch * 0.5;
       const filt = c.createBiquadFilter();
       filt.type  = 'lowpass';
-      filt.frequency.value = Math.min(pitch * 3, 700);
-      const dist = c.createWaveShaper();
-      dist.curve = makeDistCurve(150);
-      osc.connect(filt); filt.connect(dist); dist.connect(gain);
-      osc.start();
+      filt.frequency.value = Math.min(pitch * 3, 600);
+      const env  = c.createGain();
+      env.gain.setValueAtTime(0.0001, t0);
+      env.gain.exponentialRampToValueAtTime(0.9, t0 + 0.18);
+      env.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      osc.connect(filt); sub.connect(filt); filt.connect(env); env.connect(gain);
+      osc.start(t0); sub.start(t0);
+      osc.stop(t0 + dur + 0.05); sub.stop(t0 + dur + 0.05);
       currentSrc = osc;
+      osc.onended = () => {
+        currentSrc = null;
+        if (!stopped) setTimeout(playLoop, 1200 + Math.random() * 2000);
+      };
     }
   }
 
