@@ -172,7 +172,8 @@
   <p id="start-instructions">
     Turn your phone to face the zombies.<br>
     Tap to shoot, hold for rapid fire<br>
-    Double-tap to reload, triple-tap to exit
+    Double-tap to reload, triple-tap to exit<br>
+    Keyboard: arrow keys turn, space shoots, Escape exits
   </p>
   <p class="sr-only">Turn off VoiceOver on entering the game.</p>
 </div>
@@ -1276,6 +1277,42 @@ function onTouchEnd(e) {
   }, MULTI_WIN_MS);
 }
 
+// ── Keyboard controls ─────────────────────────────────────────
+// Space mirrors a finger tap exactly (routed through the same press
+// logic): a quick press shoots, holding it rapid-fires, a double-press
+// reloads and a triple-press exits. Arrow keys turn the player; Escape
+// leaves the game. Tab + Enter on the on-screen buttons is unaffected.
+const KEY_ROTATE_DEG = 7;   // degrees turned per arrow keypress (repeats while held)
+
+function rotateBy(deg) {
+  playerHeading = (playerHeading + deg + 360) % 360;
+  gyroHeading   = playerHeading;   // keep the gyro fusion in step on devices
+  applyHeading();
+}
+
+function onKeyDown(e) {
+  if (e.key === 'Escape') {
+    if (gameRunning) { e.preventDefault(); triggerExit(); }
+    return;
+  }
+  if (!gameRunning) return;        // let normal focus/typing work on menus
+  if (e.key === ' ' || e.key === 'Spacebar') {
+    e.preventDefault();            // don't scroll or activate a focused button
+    if (!e.repeat) onTouchStart({ preventDefault() {} });  // ignore OS key-repeat
+  } else if (e.key === 'ArrowLeft') {
+    e.preventDefault(); rotateBy(-KEY_ROTATE_DEG);
+  } else if (e.key === 'ArrowRight') {
+    e.preventDefault(); rotateBy(KEY_ROTATE_DEG);
+  }
+}
+
+function onKeyUp(e) {
+  if (gameRunning && (e.key === ' ' || e.key === 'Spacebar')) {
+    e.preventDefault();
+    onTouchEnd({ preventDefault() {} });
+  }
+}
+
 // ── UI helpers ─────────────────────────────────────────────────
 let fbTimer = null;
 function showFeedback(msg) {
@@ -1421,6 +1458,10 @@ tapArea.addEventListener('touchend',   onTouchEnd,   { passive: false });
 // Desktop fallback (mouse)
 tapArea.addEventListener('mousedown', () => onTouchStart({ preventDefault() {} }));
 tapArea.addEventListener('mouseup',   () => onTouchEnd({ preventDefault() {} }));
+
+// Keyboard controls (space = tap, arrows = turn, Escape = exit)
+document.addEventListener('keydown', onKeyDown);
+document.addEventListener('keyup',   onKeyUp);
 </script>
 </body>
 </html>
