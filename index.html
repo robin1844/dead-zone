@@ -215,6 +215,25 @@ function ctx() {
   return audioCtx;
 }
 
+// Master output bus: every sound routes through a brickwall limiter so no
+// combination of sources (hot reverb wash, the 7x close boost, stacked
+// growls) can ever blast the speakers. Use dest() in place of
+// dest() everywhere.
+let masterBus = null;
+function dest() {
+  if (!masterBus) {
+    const c = ctx();
+    masterBus = c.createDynamicsCompressor();
+    masterBus.threshold.value = -3;   // start limiting near full scale
+    masterBus.knee.value      = 0;    // hard knee = limiter, not gentle compression
+    masterBus.ratio.value     = 20;
+    masterBus.attack.value    = 0.003;
+    masterBus.release.value   = 0.25;
+    masterBus.connect(audioCtx.destination);   // real speakers (not via dest())
+  }
+  return masterBus;
+}
+
 // ── Audio file loading ─────────────────────────────────────────
 const audioBuffers = {};
 const AUDIO_VERSION = 3;   // bump to force browsers to re-fetch updated sound files
@@ -276,7 +295,7 @@ function playBuffer(key, destination, volume = 1) {
   const gain = ctx().createGain();
   gain.gain.value = volume;
   src.connect(gain);
-  gain.connect(destination || ctx().destination);
+  gain.connect(destination || dest());
   src.start();
   return true;
 }
@@ -299,7 +318,7 @@ function createPanner() {
   p.refDistance   = 1;
   p.maxDistance   = 25;
   p.rolloffFactor = 1.2;
-  p.connect(ctx().destination);
+  p.connect(dest());
   return p;
 }
 
@@ -324,9 +343,9 @@ function getReverb() {
   const convolver = c.createConvolver();
   convolver.buffer = makeImpulseResponse(2.8, 2.2);
   const out = c.createGain();
-  out.gain.value = 0.9;
+  out.gain.value = 0.4;   // kept modest: the tail should colour the space, not dominate
   convolver.connect(out);
-  out.connect(c.destination);
+  out.connect(dest());
   sharedReverb = convolver;
   return sharedReverb;
 }
@@ -338,10 +357,15 @@ function makeImpulseResponse(seconds, decay) {
   const ir   = c.createBuffer(2, len, rate);
   for (let ch = 0; ch < 2; ch++) {
     const d = ir.getChannelData(ch);
+    let lp = 0;
     for (let i = 0; i < len; i++) {
-      // Exponentially-decaying noise = diffuse reverb tail
-      const env = Math.pow(1 - i / len, decay);
-      d[i] = (Math.random() * 2 - 1) * env;
+      // Exponentially-decaying noise = diffuse reverb tail. A one-pole
+      // low-pass darkens it so the tail reads as a stone-hall wash rather
+      // than a bright, buzzy hiss.
+      const env   = Math.pow(1 - i / len, decay);
+      const white = Math.random() * 2 - 1;
+      lp = lp * 0.55 + white * 0.45;
+      d[i] = lp * env;
     }
     // A handful of discrete early reflections gives the space its "size"
     [0.013, 0.027, 0.041, 0.059, 0.083].forEach((rt, k) => {
@@ -381,7 +405,7 @@ function playGunshot() {
   filt.Q.value = 0.4;
   src.connect(filt);
   filt.connect(gain);
-  gain.connect(c.destination);
+  gain.connect(dest());
   src.start();
 }
 
@@ -395,7 +419,7 @@ function playDryFire() {
   gain.gain.setValueAtTime(0.3, c.currentTime);
   gain.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.04);
   osc.connect(gain);
-  gain.connect(c.destination);
+  gain.connect(dest());
   osc.start();
   osc.stop(c.currentTime + 0.04);
 }
@@ -408,7 +432,7 @@ function playReloadSound() {
     const s1 = c.createBufferSource(); s1.buffer = audioBuffers.reloadClick;
     const s2 = c.createBufferSource(); s2.buffer = audioBuffers.reloadLatch;
     const rg = c.createGain(); rg.gain.value = 5.0;
-    rg.connect(c.destination);
+    rg.connect(dest());
     s1.connect(rg); s2.connect(rg);
     s1.start(c.currentTime);
     s2.start(c.currentTime + 0.35);
@@ -426,7 +450,7 @@ function playReloadSound() {
     const gain = c.createGain();
     gain.gain.value = 1.2 + i * 0.3;
     src.connect(gain);
-    gain.connect(c.destination);
+    gain.connect(dest());
     src.start(c.currentTime + t);
   });
 }
@@ -451,7 +475,7 @@ function calcReverbSend(relDeg, distance) {
   const distT = Math.max(0, Math.min(1, (distance - 1.5) / 15)); // 0 near → 1 far
   const rad   = (relDeg * Math.PI) / 180;
   const rearT = (1 - Math.cos(rad)) / 2;
-  return 1.6 * distT + 0.35 * rearT;
+  return 0.85 * distT + 0.2 * rearT;
 }
 
 // dirGain combines rear attenuation and close-proximity boost.
@@ -620,9 +644,9 @@ function playBossBodyHit() {
   [[0.18, 0.75], [0.34, 0.55], [0.52, 0.35]].forEach(([t, w]) => {
     const d = c.createDelay(1.0); d.delayTime.value = t;
     const g = c.createGain();    g.gain.value = w;
-    gain.connect(d); d.connect(g); g.connect(c.destination);
+    gain.connect(d); d.connect(g); g.connect(dest());
   });
-  src.connect(gain); gain.connect(c.destination);
+  src.connect(gain); gain.connect(dest());
   src.start();
 }
 
@@ -670,7 +694,7 @@ function playHitThud() {
   const gain = c.createGain();
   gain.gain.setValueAtTime(3.0, c.currentTime);
   gain.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.12);
-  src.connect(lp); lp.connect(gain); gain.connect(c.destination);
+  src.connect(lp); lp.connect(gain); gain.connect(dest());
   src.start();
 }
 
@@ -691,7 +715,7 @@ function playBodyHit(distance) {
   const distVol = Math.min(1, 2.5 / Math.max(distance, 1));
   gain.gain.value = 2.5 * distVol;
   src.connect(gain);
-  gain.connect(c.destination);
+  gain.connect(dest());
   src.start();
 }
 
@@ -739,7 +763,7 @@ function playGameOverSting() {
     gain.gain.setValueAtTime(0.6, c.currentTime + i * 0.22);
     gain.gain.exponentialRampToValueAtTime(0.001, c.currentTime + i * 0.22 + 0.5);
     osc.connect(gain);
-    gain.connect(c.destination);
+    gain.connect(dest());
     osc.start(c.currentTime + i * 0.22);
     osc.stop(c.currentTime  + i * 0.22 + 0.55);
   });
@@ -754,7 +778,7 @@ function playAnnouncement(key, onDone) {
   const gain = ctx().createGain();
   gain.gain.value = 2.0;
   src.connect(gain);
-  gain.connect(ctx().destination);
+  gain.connect(dest());
   let called = false;
   const dur = audioBuffers[key].duration * 1000 + 300;
   const fb  = setTimeout(() => { if (!called) { called = true; onDone(); } }, dur);
@@ -1040,7 +1064,7 @@ function playTargetTick(vol) {
   const g = c.createGain();
   g.gain.setValueAtTime(vol, c.currentTime);
   g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.05);
-  osc.connect(g); g.connect(c.destination);
+  osc.connect(g); g.connect(dest());
   osc.start(); osc.stop(c.currentTime + 0.06);
 }
 
@@ -1053,7 +1077,7 @@ function playLockBeep() {
   const g = c.createGain();
   g.gain.setValueAtTime(0.55, c.currentTime);
   g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.04);
-  osc.connect(g); g.connect(c.destination);
+  osc.connect(g); g.connect(dest());
   osc.start(); osc.stop(c.currentTime + 0.05);
 }
 
@@ -1344,7 +1368,7 @@ function onStartPressed() {
     const buf = c.createBuffer(1, 1, c.sampleRate);
     const src = c.createBufferSource();
     src.buffer = buf;
-    src.connect(c.destination);
+    src.connect(dest());
     src.start();
   });
 
@@ -1408,6 +1432,7 @@ function triggerGameOver() {
   gameRunning = false;
   clearInterval(advanceTimer);
   stopBeeper();
+  stopFireTimers();
   zombies.forEach(z => {
     if (z.gruntTimer) clearTimeout(z.gruntTimer);
     stopGrowl(z.growl);
@@ -1416,16 +1441,15 @@ function triggerGameOver() {
   zombies = [];
   stopAmbient();
 
-  playBuffer('playerDeath', ctx().destination, 2.0);
+  playBuffer('playerDeath', dest(), 2.0);
   playGameOverSting();
   showFeedback(`GAME OVER  |  Score: ${score}`);
   setTimeout(() => playAnnouncement('annGameOver'), 2000);
   document.getElementById('last-score').textContent = `Last game: ${score} kill${score !== 1 ? 's' : ''}`;
 
   setTimeout(() => {
-    document.getElementById('game-screen').style.display  = 'none';
-    document.getElementById('start-screen').style.display = 'flex';
     document.getElementById('feedback').textContent = '';
+    returnToStartScreen();
   }, 5000);
 }
 
@@ -1434,6 +1458,7 @@ function triggerExit() {
   gameRunning = false;
   clearInterval(advanceTimer);
   stopBeeper();
+  stopFireTimers();
   zombies.forEach(z => {
     if (z.gruntTimer) clearTimeout(z.gruntTimer);
     stopGrowl(z.growl);
@@ -1443,8 +1468,27 @@ function triggerExit() {
   stopAmbient();
   playAnnouncement('annExit');
   showFeedback('');
+  returnToStartScreen();
+}
+
+// Clear any in-flight tap/hold/rapid-fire timers so they can't keep firing
+// (or counting taps) after the game has ended.
+function stopFireTimers() {
+  clearTimeout(holdTimer);   holdTimer  = null;
+  clearInterval(rapidTimer); rapidTimer = null;
+  clearTimeout(multiTimer);  multiTimer = null;
+  tapCount = 0;
+}
+
+// Return to the start screen AND move focus to the Start button, so a
+// keyboard user can immediately press Enter/Space to play again. Without
+// this the button is hidden mid-game, focus falls back to <body>, and
+// Enter then does nothing until the user tabs back to the button.
+function returnToStartScreen() {
   document.getElementById('game-screen').style.display  = 'none';
   document.getElementById('start-screen').style.display = 'flex';
+  const btn = document.getElementById('start-btn');
+  setTimeout(() => { try { btn.focus(); } catch (e) {} }, 0);
 }
 
 // ── Wire up events ─────────────────────────────────────────────
