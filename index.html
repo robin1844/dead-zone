@@ -341,9 +341,9 @@ function getReverb() {
   if (sharedReverb) return sharedReverb;
   const c = ctx();
   const convolver = c.createConvolver();
-  convolver.buffer = makeImpulseResponse(2.8, 2.2);
+  convolver.buffer = makeImpulseResponse(1.8, 3.0);
   const out = c.createGain();
-  out.gain.value = 0.4;   // kept modest: the tail should colour the space, not dominate
+  out.gain.value = 0.22;   // the tail should colour the space, never dominate it
   convolver.connect(out);
   out.connect(dest());
   sharedReverb = convolver;
@@ -359,12 +359,13 @@ function makeImpulseResponse(seconds, decay) {
     const d = ir.getChannelData(ch);
     let lp = 0;
     for (let i = 0; i < len; i++) {
-      // Exponentially-decaying noise = diffuse reverb tail. A one-pole
-      // low-pass darkens it so the tail reads as a stone-hall wash rather
-      // than a bright, buzzy hiss.
+      // Exponentially-decaying noise = diffuse reverb tail. A strong
+      // one-pole low-pass turns the raw noise into a dark, soft stone-hall
+      // wash; without it the convolved tail is bright hiss that sums into
+      // a harsh buzz on some browsers (notably desktop Chromium/Edge).
       const env   = Math.pow(1 - i / len, decay);
       const white = Math.random() * 2 - 1;
-      lp = lp * 0.55 + white * 0.45;
+      lp = lp * 0.85 + white * 0.15;
       d[i] = lp * env;
     }
     // A handful of discrete early reflections gives the space its "size"
@@ -475,7 +476,7 @@ function calcReverbSend(relDeg, distance) {
   const distT = Math.max(0, Math.min(1, (distance - 1.5) / 15)); // 0 near → 1 far
   const rad   = (relDeg * Math.PI) / 180;
   const rearT = (1 - Math.cos(rad)) / 2;
-  return 0.85 * distT + 0.2 * rearT;
+  return 0.7 * distT + 0.15 * rearT;
 }
 
 // dirGain combines rear attenuation and close-proximity boost.
