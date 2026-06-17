@@ -236,26 +236,23 @@ function dest() {
 
 // ── Audio file loading ─────────────────────────────────────────
 const audioBuffers = {};
-const AUDIO_VERSION = 4;   // bump to force browsers to re-fetch updated sound files
+const AUDIO_VERSION = 5;   // bump to force browsers to re-fetch updated sound files
 
 async function loadSounds() {
-  // The user-edited clips are served as PCM WAV rather than MP3: some MP3
-  // decoders (notably desktop Edge) rejected the editor's MP3 export and
-  // fell back to a synthetic groan. WAV decodes natively everywhere.
   const files = {
     gunshot:      'sounds/gunshot.mp3',
     zombieHit:    'sounds/zombie_hit2.ogg',
     zombieDeath:  'sounds/zombie_death.ogg',
-    groan1:       'sounds/groan1.wav',
-    groan2:       'sounds/groan2.wav',
-    groan3:       'sounds/groan3.wav',
-    groan4:       'sounds/groan4.wav',
-    groan5:       'sounds/groan5.wav',
-    bossGroan:    'sounds/zombie_groan.wav',
+    groan1:       'sounds/groan1.mp3',
+    groan2:       'sounds/groan2.mp3',
+    groan3:       'sounds/groan3.mp3',
+    groan4:       'sounds/groan4.mp3',
+    groan5:       'sounds/groan5.mp3',
+    bossGroan:    'sounds/zombie_groan.mp3',
     playerDeath:  'sounds/player_death.mp3',
-    bodyHitA:     'sounds/body_hit_a.wav',
-    bodyHitB:     'sounds/body_hit_b.wav',
-    bodyHitC:     'sounds/body_hit_c.wav',
+    bodyHitA:     'sounds/body_hit_a.mp3',
+    bodyHitB:     'sounds/body_hit_b.mp3',
+    bodyHitC:     'sounds/body_hit_c.mp3',
     reloadClick:  'sounds/reload_click.ogg',
     reloadLatch:  'sounds/reload_latch.ogg',
     annIntro:     'sounds/ann_intro.wav',
@@ -344,9 +341,9 @@ function getReverb() {
   if (sharedReverb) return sharedReverb;
   const c = ctx();
   const convolver = c.createConvolver();
-  convolver.buffer = makeImpulseResponse(1.8, 3.0);
+  convolver.buffer = makeImpulseResponse(2.6, 2.3);
   const out = c.createGain();
-  out.gain.value = 0.22;   // the tail should colour the space, never dominate it
+  out.gain.value = 0.6;   // lush cavern tail; the master limiter guards against runaway
   convolver.connect(out);
   out.connect(dest());
   sharedReverb = convolver;
@@ -368,7 +365,7 @@ function makeImpulseResponse(seconds, decay) {
       // a harsh buzz on some browsers (notably desktop Chromium/Edge).
       const env   = Math.pow(1 - i / len, decay);
       const white = Math.random() * 2 - 1;
-      lp = lp * 0.85 + white * 0.15;
+      lp = lp * 0.6 + white * 0.4;
       d[i] = lp * env;
     }
     // A handful of discrete early reflections gives the space its "size"
@@ -479,7 +476,7 @@ function calcReverbSend(relDeg, distance) {
   const distT = Math.max(0, Math.min(1, (distance - 1.5) / 15)); // 0 near → 1 far
   const rad   = (relDeg * Math.PI) / 180;
   const rearT = (1 - Math.cos(rad)) / 2;
-  return 0.7 * distT + 0.15 * rearT;
+  return 1.4 * distT + 0.3 * rearT;
 }
 
 // dirGain combines rear attenuation and close-proximity boost.
@@ -1328,7 +1325,10 @@ function onTouchEnd(e) {
 // logic): a quick press shoots, holding it rapid-fires, a double-press
 // reloads and a triple-press exits. Arrow keys turn the player; Escape
 // leaves the game. Tab + Enter on the on-screen buttons is unaffected.
-const KEY_ROTATE_DEG = 7;   // degrees turned per arrow keypress (repeats while held)
+// Turn just under the full kill-zone width (2 x HIT_DEG = 40 deg) per press,
+// so stepping across a zombie always lands inside the zone at least once and
+// never jumps clean over it. Repeats while the arrow key is held.
+const KEY_ROTATE_DEG = HIT_DEG * 2 - 4;   // 36 deg
 
 function rotateBy(deg) {
   playerHeading = (playerHeading + deg + 360) % 360;
