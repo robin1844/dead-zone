@@ -336,18 +336,60 @@ function setPannerPos(panner, relDeg, distance) {
 // space feel like a large stone hall. Each zombie sends a distance-
 // dependent amount into it: far zombies are drenched (sound distant and
 // echoey), near zombies are almost dry (sound right on top of you).
+// Acoustic environment: 'indoor' (the default stone-hall cavern) or
+// 'outdoor' (open air with sparse distant reflections). One level is set
+// outdoors for variety - see environmentForRound().
+let currentEnv = 'indoor';
+function environmentForRound(r) { return r === 3 ? 'outdoor' : 'indoor'; }
+
 let sharedReverb = null;
+let reverbOut    = null;
 function getReverb() {
   if (sharedReverb) return sharedReverb;
   const c = ctx();
-  const convolver = c.createConvolver();
-  convolver.buffer = makeImpulseResponse(2.6, 2.3);
-  const out = c.createGain();
-  out.gain.value = 0.6;   // lush cavern tail; the master limiter guards against runaway
-  convolver.connect(out);
-  out.connect(dest());
-  sharedReverb = convolver;
+  sharedReverb = c.createConvolver();
+  reverbOut    = c.createGain();
+  sharedReverb.connect(reverbOut);
+  reverbOut.connect(dest());
+  applyReverbEnv(currentEnv);   // sets the impulse response + level for the active env
   return sharedReverb;
+}
+
+// Swap the reverb character for the active environment. Indoors = a long,
+// dense cavern tail. Outdoors = a few sparse slap-backs off distant
+// surfaces and then silence, at a lower level - the ear reads the missing
+// tail as "no walls", i.e. open air.
+function applyReverbEnv(env) {
+  if (!sharedReverb) return;
+  if (env === 'outdoor') {
+    sharedReverb.buffer = makeOutdoorIR();
+    reverbOut.gain.value = 0.34;
+  } else {
+    sharedReverb.buffer = makeImpulseResponse(2.6, 2.3);
+    reverbOut.gain.value = 0.6;
+  }
+}
+
+// Outdoor impulse response: no dense tail, just a handful of short, decaying
+// reflections at 70-520 ms (sound bouncing back off distant buildings),
+// each a tiny noise burst rather than a clean ping so it reads as natural.
+function makeOutdoorIR() {
+  const c    = ctx();
+  const rate = c.sampleRate;
+  const len  = Math.floor(rate * 0.85);
+  const ir   = c.createBuffer(2, len, rate);
+  const taps = [[0.07, 0.55], [0.13, 0.42], [0.22, 0.30], [0.34, 0.20], [0.52, 0.11]];
+  const burst = Math.floor(rate * 0.018);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = ir.getChannelData(ch);
+    taps.forEach(([rt, amp], k) => {
+      const idx = Math.floor(rt * rate) + (ch === 1 ? Math.floor(rate * 0.004) : 0);
+      for (let j = 0; j < burst && idx + j < len; j++) {
+        d[idx + j] += (Math.random() * 2 - 1) * amp * (1 - j / burst);
+      }
+    });
+  }
+  return ir;
 }
 
 function makeImpulseResponse(seconds, decay) {
@@ -380,7 +422,7 @@ function makeImpulseResponse(seconds, decay) {
 function updateZombieAudio(z, relDeg) {
   setPannerPos(z.panner, relDeg, z.distance);
   const t = ctx().currentTime;
-  z.growl.spatialFilt.frequency.setValueAtTime(calcSpatialCutoff(relDeg), t);
+  z.growl.spatialFilt.frequency.setValueAtTime(calcSpatialCutoff(relDeg, z.distance), t);
   z.growl.reverbSend.gain.setValueAtTime(calcReverbSend(relDeg, z.distance), t);
   z.growl.gain.gain.setValueAtTime(1.62 * calcDirGain(relDeg, z.distance), t);
 }
@@ -461,11 +503,19 @@ function playReloadSound() {
 // dead-ahead and dead-behind pan identically), so the ONLY front/back
 // cue is timbre. Front = bright and present; behind = muffled, as if the
 // sound has to travel around your head. A steep curve makes it obvious.
-function calcSpatialCutoff(relDeg) {
+function calcSpatialCutoff(relDeg, distance) {
   const rad = (relDeg * Math.PI) / 180;
   let   t   = (1 - Math.cos(rad)) / 2;         // 0 = front, 1 = back
   t = Math.pow(t, 0.6);                        // bias so the side/rear muffles sooner
-  return 19000 - 18400 * t;                    // 19000 Hz front → 600 Hz behind
+  let cutoff = 19000 - 18400 * t;              // 19000 Hz front → 600 Hz behind
+  if (currentEnv === 'outdoor' && distance != null) {
+    // Open-air air-absorption: with no walls to reinforce them, the highs
+    // of distant sounds are swallowed, so far zombies go dull and "across
+    // the field". Indoors the room fills in those highs, so we skip this.
+    const dT = Math.max(0, Math.min(1, (distance - 3) / 13));
+    cutoff = Math.min(cutoff, 15000 - 12000 * dT);   // near ~15k → far ~3k Hz
+  }
+  return cutoff;
 }
 
 // Distance: the wet/dry balance is how ears judge distance in a big room.
@@ -476,6 +526,9 @@ function calcReverbSend(relDeg, distance) {
   const distT = Math.max(0, Math.min(1, (distance - 1.5) / 15)); // 0 near → 1 far
   const rad   = (relDeg * Math.PI) / 180;
   const rearT = (1 - Math.cos(rad)) / 2;
+  // Outdoors there is far less reflected sound, so the send is much lower -
+  // just enough to place the sparse distant slap-backs.
+  if (currentEnv === 'outdoor') return 0.5 * distT + 0.1 * rearT;
   return 1.4 * distT + 0.3 * rearT;
 }
 
@@ -671,6 +724,7 @@ function playBossBodyHit() {
 
 function enterBossLevel() {
   round = 5; killsThisRound = 0; bossSpawned = false;
+  applyEnvironment(round);   // back indoors for the boss
   playAnnouncement('annLevel5', () => {
     for (let i = 0; i < 5; i++)
       setTimeout(() => { if (gameRunning) spawnZombie(); }, i * 700);
@@ -807,20 +861,30 @@ function playAnnouncement(key, onDone) {
 
 // ── Ambient fixed-position sounds ─────────────────────────────
 // Three anchors at fixed world angles help the player calibrate orientation.
-const AMBIENT_SOURCES = [
+// Indoor anchors (industrial interior) vs outdoor anchors (ruined street).
+const INDOOR_AMBIENT = [
   { angle: 60,  label: 'beep',  type: 'beep' },
   { angle: 200, label: 'drip',  type: 'drip' },
   { angle: 330, label: 'hum',   type: 'hum'  },
   { angle: 140, label: 'fan',   type: 'fan', dist: 15 },
 ];
+const OUTDOOR_AMBIENT = [
+  { angle: 70,  label: 'alarm', type: 'alarm',   dist: 13 },
+  { angle: 250, label: 'dog',   type: 'dogbark', dist: 14 },
+  { angle: 0,   label: 'wind',  type: 'wind' },   // omnidirectional, no panner
+];
+function currentAmbientSet() { return currentEnv === 'outdoor' ? OUTDOOR_AMBIENT : INDOOR_AMBIENT; }
 let ambientNodes = [];
 
 function startAmbient() {
-  AMBIENT_SOURCES.forEach(src => {
-    const panner = createPanner();
-    const relDeg = ((src.angle - playerHeading) + 360) % 360;
-    const dist   = src.dist || 8;
-    setPannerPos(panner, relDeg, dist);
+  currentAmbientSet().forEach(src => {
+    // Wind is an omnidirectional bed - it has no point in space, so no panner.
+    let panner = null;
+    if (src.type !== 'wind') {
+      panner = createPanner();
+      const relDeg = ((src.angle - playerHeading) + 360) % 360;
+      setPannerPos(panner, relDeg, src.dist || 8);
+    }
 
     if (src.type === 'hum') {
       // Continuous low electrical hum
@@ -930,6 +994,85 @@ function startAmbient() {
 
       ambientNodes.push({ panner, worldAngle: src.angle,
         nodes: [motor, motorLp, motorGain, noise, noiseBp, noiseGain, lfo, lfoGain, out] });
+
+    } else if (src.type === 'alarm') {
+      // Far-off car / house alarm: a warbling two-tone that blares for ~2s
+      // then falls silent for several seconds. Heavily low-passed so it
+      // reads as distant. Aftermath-of-chaos flavour.
+      const c   = ctx();
+      const lp  = c.createBiquadFilter();
+      lp.type   = 'lowpass'; lp.frequency.value = 1100; lp.Q.value = 0.6;
+      lp.connect(panner);
+      const osc = c.createOscillator();
+      osc.type  = 'square'; osc.frequency.value = 720;
+      const warble = c.createOscillator();
+      warble.type  = 'sine'; warble.frequency.value = 5.5;
+      const warbleAmt = c.createGain(); warbleAmt.gain.value = 130;
+      warble.connect(warbleAmt); warbleAmt.connect(osc.frequency);
+      const g = c.createGain(); g.gain.value = 0.0001;
+      osc.connect(g); g.connect(lp);
+      osc.start(); warble.start();
+      const node = { panner, worldAngle: src.angle, nodes: [osc, warble, warbleAmt, g, lp], timer: null };
+      function blare() {
+        if (!gameRunning) return;
+        const t0 = c.currentTime;
+        g.gain.cancelScheduledValues(t0);
+        g.gain.setValueAtTime(0.0001, t0);
+        g.gain.exponentialRampToValueAtTime(0.5, t0 + 0.12);
+        g.gain.setValueAtTime(0.5, t0 + 1.9);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + 2.1);
+        node.timer = setTimeout(blare, 4500 + Math.random() * 3500);
+      }
+      ambientNodes.push(node);
+      node.timer = setTimeout(blare, 700);
+
+    } else if (src.type === 'dogbark') {
+      // Distant dog: short volleys of 2-3 barks, then long random silence.
+      const c  = ctx();
+      const lp = c.createBiquadFilter();
+      lp.type  = 'lowpass'; lp.frequency.value = 900; lp.Q.value = 0.7;
+      lp.connect(panner);
+      const node = { panner, worldAngle: src.angle, nodes: [lp], timer: null };
+      function bark(t0) {
+        const osc = c.createOscillator();
+        osc.type  = 'sawtooth';
+        osc.frequency.setValueAtTime(470, t0);
+        osc.frequency.exponentialRampToValueAtTime(240, t0 + 0.1);
+        const g = c.createGain();
+        g.gain.setValueAtTime(0.0001, t0);
+        g.gain.exponentialRampToValueAtTime(0.5, t0 + 0.015);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.13);
+        osc.connect(g); g.connect(lp);
+        osc.start(t0); osc.stop(t0 + 0.16);
+      }
+      function volley() {
+        if (!gameRunning) return;
+        const n = 2 + Math.floor(Math.random() * 2);
+        const t0 = c.currentTime;
+        for (let i = 0; i < n; i++) bark(t0 + i * (0.22 + Math.random() * 0.1));
+        node.timer = setTimeout(volley, 5000 + Math.random() * 7000);
+      }
+      ambientNodes.push(node);
+      node.timer = setTimeout(volley, 1600 + Math.random() * 2000);
+
+    } else if (src.type === 'wind') {
+      // Omnidirectional wind bed: soft, slowly-swelling low noise straight to
+      // the master bus (no panner). Fills the open space and sells "no walls".
+      const c = ctx();
+      const noiseBuf = c.createBuffer(1, c.sampleRate * 3, c.sampleRate);
+      const ndat = noiseBuf.getChannelData(0);
+      for (let i = 0; i < ndat.length; i++) ndat[i] = Math.random() * 2 - 1;
+      const noise = c.createBufferSource();
+      noise.buffer = noiseBuf; noise.loop = true;
+      const lp = c.createBiquadFilter();
+      lp.type = 'lowpass'; lp.frequency.value = 420; lp.Q.value = 0.4;
+      const g = c.createGain(); g.gain.value = 0.09;
+      const lfo = c.createOscillator(); lfo.type = 'sine'; lfo.frequency.value = 0.07;
+      const lg  = c.createGain(); lg.gain.value = 0.05;
+      lfo.connect(lg); lg.connect(g.gain);
+      noise.connect(lp); lp.connect(g); g.connect(dest());
+      noise.start(); lfo.start();
+      ambientNodes.push({ panner: null, worldAngle: null, nodes: [noise, lp, g, lfo, lg] });
     }
   });
 }
@@ -938,19 +1081,32 @@ function stopAmbient() {
   ambientNodes.forEach(n => {
     clearTimeout(n.timer);
     n.nodes.forEach(nd => { try { if (nd.stop) nd.stop(); nd.disconnect(); } catch(e){} });
-    n.panner.disconnect();
+    if (n.panner) n.panner.disconnect();
   });
   ambientNodes = [];
+}
+
+// Switch the whole acoustic scene (reverb + ambient anchors) for a level.
+// Called at game start and on every level change; a no-op if the
+// environment is unchanged and ambience is already running.
+function applyEnvironment(round) {
+  const env = environmentForRound(round);
+  if (env === currentEnv && ambientNodes.length) return;
+  currentEnv = env;
+  applyReverbEnv(env);
+  stopAmbient();
+  startAmbient();
 }
 
 function updateAmbientPanners() {
   // Called from onOrientation - update panner positions for fixed world angles
   const seen = new Set();
   ambientNodes.forEach(n => {
+    if (!n.panner) return;                       // omnidirectional bed (wind) - skip
     if (seen.has(n.worldAngle)) return;
     seen.add(n.worldAngle);
     const rel = ((n.worldAngle - playerHeading) + 360) % 360;
-    const src = AMBIENT_SOURCES.find(s => s.angle === n.worldAngle);
+    const src = currentAmbientSet().find(s => s.angle === n.worldAngle);
     setPannerPos(n.panner, rel, (src && src.dist) || 8);
   });
 }
@@ -1239,6 +1395,7 @@ function shoot() {
         } else if (killsThisRound >= need) {
           round++;
           killsThisRound = 0;
+          applyEnvironment(round);   // indoor/outdoor scene for the new level
           playAnnouncement('annLevel' + round);
           showFeedback(`Level ${round}!`);
           setTimeout(() => { if (gameRunning) spawnZombie(); }, 1400 + Math.random() * 800);
@@ -1443,7 +1600,7 @@ function beginPlay() {
   zombies        = [];
   updateHUD();
 
-  startAmbient();
+  applyEnvironment(round);   // sets reverb + ambient scene for level 1
   startBeeper();
   spawnZombie();
   advanceTimer = setInterval(tick, 200);
