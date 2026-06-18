@@ -236,7 +236,7 @@ function dest() {
 
 // ── Audio file loading ─────────────────────────────────────────
 const audioBuffers = {};
-const AUDIO_VERSION = 5;   // bump to force browsers to re-fetch updated sound files
+const AUDIO_VERSION = 6;   // bump to force browsers to re-fetch updated sound files
 
 async function loadSounds() {
   const files = {
@@ -255,6 +255,8 @@ async function loadSounds() {
     bodyHitC:     'sounds/body_hit_c.mp3',
     reloadClick:  'sounds/reload_click.ogg',
     reloadLatch:  'sounds/reload_latch.ogg',
+    carAlarm:     'sounds/car_alarm.mp3',    // CC0, qubodup (freesound 185474)
+    dogBark:      'sounds/dog_bark.mp3',     // CC0, SuperStudioBR (freesound 180977)
     annIntro:     'sounds/ann_intro.wav',
     annLevel1:    'sounds/ann_level1.wav',
     annLevel2:    'sounds/ann_level2.wav',
@@ -340,7 +342,7 @@ function setPannerPos(panner, relDeg, distance) {
 // 'outdoor' (open air with sparse distant reflections). One level is set
 // outdoors for variety - see environmentForRound().
 let currentEnv = 'indoor';
-function environmentForRound(r) { return r === 3 ? 'outdoor' : 'indoor'; }
+function environmentForRound(r) { return r === 1 ? 'outdoor' : 'indoor'; }
 
 let sharedReverb = null;
 let reverbOut    = null;
@@ -869,8 +871,8 @@ const INDOOR_AMBIENT = [
   { angle: 140, label: 'fan',   type: 'fan', dist: 15 },
 ];
 const OUTDOOR_AMBIENT = [
-  { angle: 70,  label: 'alarm', type: 'alarm',   dist: 13 },
-  { angle: 250, label: 'dog',   type: 'dogbark', dist: 14 },
+  { angle: 70,  label: 'alarm', type: 'alarm',   dist: 11 },
+  { angle: 250, label: 'dog',   type: 'dogbark', dist: 11 },
   { angle: 0,   label: 'wind',  type: 'wind' },   // omnidirectional, no panner
 ];
 function currentAmbientSet() { return currentEnv === 'outdoor' ? OUTDOOR_AMBIENT : INDOOR_AMBIENT; }
@@ -996,64 +998,63 @@ function startAmbient() {
         nodes: [motor, motorLp, motorGain, noise, noiseBp, noiseGain, lfo, lfoGain, out] });
 
     } else if (src.type === 'alarm') {
-      // Far-off car / house alarm: a warbling two-tone that blares for ~2s
-      // then falls silent for several seconds. Heavily low-passed so it
-      // reads as distant. Aftermath-of-chaos flavour.
-      const c   = ctx();
-      const lp  = c.createBiquadFilter();
-      lp.type   = 'lowpass'; lp.frequency.value = 1100; lp.Q.value = 0.6;
-      lp.connect(panner);
-      const osc = c.createOscillator();
-      osc.type  = 'square'; osc.frequency.value = 720;
-      const warble = c.createOscillator();
-      warble.type  = 'sine'; warble.frequency.value = 5.5;
-      const warbleAmt = c.createGain(); warbleAmt.gain.value = 130;
-      warble.connect(warbleAmt); warbleAmt.connect(osc.frequency);
-      const g = c.createGain(); g.gain.value = 0.0001;
-      osc.connect(g); g.connect(lp);
-      osc.start(); warble.start();
-      const node = { panner, worldAngle: src.angle, nodes: [osc, warble, warbleAmt, g, lp], timer: null };
-      function blare() {
-        if (!gameRunning) return;
-        const t0 = c.currentTime;
-        g.gain.cancelScheduledValues(t0);
-        g.gain.setValueAtTime(0.0001, t0);
-        g.gain.exponentialRampToValueAtTime(0.5, t0 + 0.12);
-        g.gain.setValueAtTime(0.5, t0 + 1.9);
-        g.gain.exponentialRampToValueAtTime(0.0001, t0 + 2.1);
-        node.timer = setTimeout(blare, 4500 + Math.random() * 3500);
-      }
-      ambientNodes.push(node);
-      node.timer = setTimeout(blare, 700);
-
-    } else if (src.type === 'dogbark') {
-      // Distant dog: short volleys of 2-3 barks, then long random silence.
+      // Constant far-off car alarm - a real recording looped continuously.
+      // Low-passed so it sits in the distance. Aftermath-of-chaos flavour.
       const c  = ctx();
       const lp = c.createBiquadFilter();
-      lp.type  = 'lowpass'; lp.frequency.value = 900; lp.Q.value = 0.7;
-      lp.connect(panner);
-      const node = { panner, worldAngle: src.angle, nodes: [lp], timer: null };
-      function bark(t0) {
-        const osc = c.createOscillator();
-        osc.type  = 'sawtooth';
-        osc.frequency.setValueAtTime(470, t0);
-        osc.frequency.exponentialRampToValueAtTime(240, t0 + 0.1);
-        const g = c.createGain();
-        g.gain.setValueAtTime(0.0001, t0);
-        g.gain.exponentialRampToValueAtTime(0.5, t0 + 0.015);
-        g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.13);
-        osc.connect(g); g.connect(lp);
-        osc.start(t0); osc.stop(t0 + 0.16);
+      lp.type  = 'lowpass'; lp.frequency.value = 1500; lp.Q.value = 0.5;
+      const g  = c.createGain(); g.gain.value = 0.8;
+      lp.connect(g); g.connect(panner);
+      if (audioBuffers.carAlarm) {
+        const s = c.createBufferSource();
+        s.buffer = audioBuffers.carAlarm; s.loop = true;
+        s.connect(lp); s.start();
+        ambientNodes.push({ panner, worldAngle: src.angle, nodes: [s, lp, g] });
+      } else {
+        // Synth fallback: constant warbling two-tone
+        const osc = c.createOscillator(); osc.type = 'square'; osc.frequency.value = 720;
+        const w   = c.createOscillator(); w.type = 'sine'; w.frequency.value = 5.5;
+        const wa  = c.createGain(); wa.gain.value = 130; w.connect(wa); wa.connect(osc.frequency);
+        g.gain.value = 0.16; osc.connect(lp); osc.start(); w.start();
+        ambientNodes.push({ panner, worldAngle: src.angle, nodes: [osc, w, wa, lp, g] });
       }
-      function volley() {
-        if (!gameRunning) return;
-        const n = 2 + Math.floor(Math.random() * 2);
-        const t0 = c.currentTime;
-        for (let i = 0; i < n; i++) bark(t0 + i * (0.22 + Math.random() * 0.1));
-        node.timer = setTimeout(volley, 5000 + Math.random() * 7000);
+
+    } else if (src.type === 'dogbark') {
+      // Distant dog - a real recording looped (it has natural gaps between
+      // barks, so looping gives a dog barking on and off in the distance).
+      const c  = ctx();
+      const lp = c.createBiquadFilter();
+      lp.type  = 'lowpass'; lp.frequency.value = 1500; lp.Q.value = 0.5;
+      const g  = c.createGain(); g.gain.value = 0.8;
+      lp.connect(g); g.connect(panner);
+      if (audioBuffers.dogBark) {
+        const s = c.createBufferSource();
+        s.buffer = audioBuffers.dogBark; s.loop = true;
+        s.connect(lp); s.start();
+        ambientNodes.push({ panner, worldAngle: src.angle, nodes: [s, lp, g] });
+      } else {
+        // Synth fallback: periodic bark volleys
+        const node = { panner, worldAngle: src.angle, nodes: [lp, g], timer: null };
+        function bark(t0) {
+          const o = c.createOscillator(); o.type = 'sawtooth';
+          o.frequency.setValueAtTime(470, t0);
+          o.frequency.exponentialRampToValueAtTime(240, t0 + 0.1);
+          const bg = c.createGain();
+          bg.gain.setValueAtTime(0.0001, t0);
+          bg.gain.exponentialRampToValueAtTime(0.6, t0 + 0.015);
+          bg.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.13);
+          o.connect(bg); bg.connect(lp); o.start(t0); o.stop(t0 + 0.16);
+        }
+        function volley() {
+          if (!gameRunning) return;
+          const n = 2 + Math.floor(Math.random() * 2);
+          const t0 = c.currentTime;
+          for (let i = 0; i < n; i++) bark(t0 + i * 0.25);
+          node.timer = setTimeout(volley, 5000 + Math.random() * 6000);
+        }
+        ambientNodes.push(node);
+        node.timer = setTimeout(volley, 1600);
       }
-      ambientNodes.push(node);
-      node.timer = setTimeout(volley, 1600 + Math.random() * 2000);
 
     } else if (src.type === 'wind') {
       // Omnidirectional wind bed: soft, slowly-swelling low noise straight to
@@ -1065,8 +1066,8 @@ function startAmbient() {
       const noise = c.createBufferSource();
       noise.buffer = noiseBuf; noise.loop = true;
       const lp = c.createBiquadFilter();
-      lp.type = 'lowpass'; lp.frequency.value = 420; lp.Q.value = 0.4;
-      const g = c.createGain(); g.gain.value = 0.09;
+      lp.type = 'lowpass'; lp.frequency.value = 520; lp.Q.value = 0.4;
+      const g = c.createGain(); g.gain.value = 0.17;
       const lfo = c.createOscillator(); lfo.type = 'sine'; lfo.frequency.value = 0.07;
       const lg  = c.createGain(); lg.gain.value = 0.05;
       lfo.connect(lg); lg.connect(g.gain);
