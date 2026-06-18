@@ -236,7 +236,7 @@ function dest() {
 
 // ── Audio file loading ─────────────────────────────────────────
 const audioBuffers = {};
-const AUDIO_VERSION = 6;   // bump to force browsers to re-fetch updated sound files
+const AUDIO_VERSION = 7;   // bump to force browsers to re-fetch updated sound files
 
 async function loadSounds() {
   const files = {
@@ -255,7 +255,7 @@ async function loadSounds() {
     bodyHitC:     'sounds/body_hit_c.mp3',
     reloadClick:  'sounds/reload_click.ogg',
     reloadLatch:  'sounds/reload_latch.ogg',
-    carAlarm:     'sounds/car_alarm.mp3',    // CC0, qubodup (freesound 185474)
+    carAlarm:     'sounds/car_alarm.mp3',    // CC0, kyles (freesound 452177)
     dogBark:      'sounds/dog_bark.mp3',     // CC0, SuperStudioBR (freesound 180977)
     annIntro:     'sounds/ann_intro.wav',
     annLevel1:    'sounds/ann_level1.wav',
@@ -1003,7 +1003,7 @@ function startAmbient() {
       const c  = ctx();
       const lp = c.createBiquadFilter();
       lp.type  = 'lowpass'; lp.frequency.value = 1500; lp.Q.value = 0.5;
-      const g  = c.createGain(); g.gain.value = 0.8;
+      const g  = c.createGain(); g.gain.value = 7.0;   // this recording is quiet; lift it
       lp.connect(g); g.connect(panner);
       if (audioBuffers.carAlarm) {
         const s = c.createBufferSource();
@@ -1067,7 +1067,7 @@ function startAmbient() {
       noise.buffer = noiseBuf; noise.loop = true;
       const lp = c.createBiquadFilter();
       lp.type = 'lowpass'; lp.frequency.value = 520; lp.Q.value = 0.4;
-      const g = c.createGain(); g.gain.value = 0.17;
+      const g = c.createGain(); g.gain.value = 0.11;
       const lfo = c.createOscillator(); lfo.type = 'sine'; lfo.frequency.value = 0.07;
       const lg  = c.createGain(); lg.gain.value = 0.05;
       lfo.connect(lg); lg.connect(g.gain);
