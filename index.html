@@ -236,7 +236,7 @@ function dest() {
 
 // ── Audio file loading ─────────────────────────────────────────
 const audioBuffers = {};
-const AUDIO_VERSION = 7;   // bump to force browsers to re-fetch updated sound files
+const AUDIO_VERSION = 8;   // bump to force browsers to re-fetch updated sound files
 
 async function loadSounds() {
   const files = {
@@ -255,14 +255,24 @@ async function loadSounds() {
     bodyHitC:     'sounds/body_hit_c.mp3',
     reloadClick:  'sounds/reload_click.ogg',
     reloadLatch:  'sounds/reload_latch.ogg',
-    carAlarm:     'sounds/car_alarm.mp3',    // CC0, kyles (freesound 452177)
-    dogBark:      'sounds/dog_bark.mp3',     // CC0, SuperStudioBR (freesound 180977)
+    carAlarm:      'sounds/car_alarm.mp3',     // CC0, kyles (freesound 452177)
+    dogBark:       'sounds/dog_bark.mp3',      // CC0, SuperStudioBR (freesound 180977)
+    subwayTrain:   'sounds/subway_train.mp3',  // CC0, Syphon64 (freesound 135209)
+    forestCrickets:'sounds/forest_crickets.mp3', // CC0, 2887679652 (freesound 167304)
+    forestOwl:     'sounds/forest_owl.mp3',    // CC0, gfrog (freesound 157870)
+    forestWolf:    'sounds/forest_wolf.mp3',   // CC0, kiwisarecool (freesound 203342)
+    churchBell:    'sounds/church_bell.mp3',   // CC0, mikewest (freesound 411489)
+    rainBed:       'sounds/rain_bed.mp3',      // CC0, Talitha5 (freesound 321885)
+    rainMetal:     'sounds/rain_metal.mp3',    // CC0, pcpmeltsfaces (freesound 271011)
     annIntro:     'sounds/ann_intro.wav',
     annLevel1:    'sounds/ann_level1.wav',
     annLevel2:    'sounds/ann_level2.wav',
     annLevel3:    'sounds/ann_level3.wav',
     annLevel4:    'sounds/ann_level4.wav',
     annLevel5:    'sounds/ann_level5.wav',
+    annLevel6:    'sounds/ann_level6.wav',
+    annLevel7:    'sounds/ann_level7.wav',
+    annLevel8:    'sounds/ann_level8.wav',
     annBoss:      'sounds/ann_boss.wav',
     annGameOver:  'sounds/ann_gameover.wav',
     annVictory:   'sounds/ann_victory.wav',
@@ -338,11 +348,35 @@ function setPannerPos(panner, relDeg, distance) {
 // space feel like a large stone hall. Each zombie sends a distance-
 // dependent amount into it: far zombies are drenched (sound distant and
 // echoey), near zombies are almost dry (sound right on top of you).
-// Acoustic environment: 'indoor' (the default stone-hall cavern) or
-// 'outdoor' (open air with sparse distant reflections). One level is set
-// outdoors for variety - see environmentForRound().
-let currentEnv = 'indoor';
-function environmentForRound(r) { return r === 1 ? 'outdoor' : 'indoor'; }
+// Each level has its own acoustic environment: a reverb profile plus a set
+// of ambient anchors. environmentForRound() maps a level to its name.
+const LEVEL_ENVIRONMENT = {
+  1: 'street', 2: 'carpark', 3: 'hospital', 4: 'subway',
+  5: 'forest', 6: 'cathedral', 7: 'rain', 8: 'cavern',
+};
+let currentEnv = 'street';
+function environmentForRound(r) { return LEVEL_ENVIRONMENT[r] || 'cavern'; }
+
+// Open-air spaces: distance dulls the highs (air absorption) and very
+// little sound reflects back.
+const OUTDOOR_ENVS = new Set(['street', 'rain', 'forest']);
+
+// Reverb profile per environment: the impulse response and its output level.
+const REVERB_PROFILES = {
+  street:    () => ({ buf: makeOutdoorIR(),                      gain: 0.34 }),
+  rain:      () => ({ buf: makeOutdoorIR(),                      gain: 0.30 }),
+  forest:    () => ({ buf: makeImpulseResponse(0.35, 4.0, 0.7),  gain: 0.10 }), // near-dry
+  carpark:   () => ({ buf: makeSlapIR(),                         gain: 0.45 }), // hard slap
+  hospital:  () => ({ buf: makeImpulseResponse(1.2,  2.6, 0.35), gain: 0.42 }), // bright tile
+  subway:    () => ({ buf: makeImpulseResponse(3.2,  1.9, 0.5),  gain: 0.52 }), // big hall
+  cathedral: () => ({ buf: makeImpulseResponse(4.2,  1.6, 0.5),  gain: 0.62 }), // huge, smooth
+  cavern:    () => ({ buf: makeImpulseResponse(2.6,  2.3, 0.6),  gain: 0.6  }), // dark, medium
+};
+// How wet each space is (multiplies the per-zombie reverb send).
+const SEND_MULT = {
+  street: 0.4, rain: 0.4, forest: 0.15, carpark: 0.7,
+  hospital: 0.7, subway: 1.1, cathedral: 1.25, cavern: 1.0,
+};
 
 let sharedReverb = null;
 let reverbOut    = null;
@@ -357,19 +391,12 @@ function getReverb() {
   return sharedReverb;
 }
 
-// Swap the reverb character for the active environment. Indoors = a long,
-// dense cavern tail. Outdoors = a few sparse slap-backs off distant
-// surfaces and then silence, at a lower level - the ear reads the missing
-// tail as "no walls", i.e. open air.
+// Swap the reverb character + level for the active environment.
 function applyReverbEnv(env) {
   if (!sharedReverb) return;
-  if (env === 'outdoor') {
-    sharedReverb.buffer = makeOutdoorIR();
-    reverbOut.gain.value = 0.34;
-  } else {
-    sharedReverb.buffer = makeImpulseResponse(2.6, 2.3);
-    reverbOut.gain.value = 0.6;
-  }
+  const p = (REVERB_PROFILES[env] || REVERB_PROFILES.cavern)();
+  sharedReverb.buffer  = p.buf;
+  reverbOut.gain.value = p.gain;
 }
 
 // Outdoor impulse response: no dense tail, just a handful of short, decaying
@@ -394,7 +421,9 @@ function makeOutdoorIR() {
   return ir;
 }
 
-function makeImpulseResponse(seconds, decay) {
+// lpCoef (0..1) sets tail brightness: higher = darker. Default 0.6.
+function makeImpulseResponse(seconds, decay, lpCoef) {
+  if (lpCoef == null) lpCoef = 0.6;
   const c    = ctx();
   const rate = c.sampleRate;
   const len  = Math.floor(rate * seconds);
@@ -403,19 +432,37 @@ function makeImpulseResponse(seconds, decay) {
     const d = ir.getChannelData(ch);
     let lp = 0;
     for (let i = 0; i < len; i++) {
-      // Exponentially-decaying noise = diffuse reverb tail. A strong
-      // one-pole low-pass turns the raw noise into a dark, soft stone-hall
-      // wash; without it the convolved tail is bright hiss that sums into
-      // a harsh buzz on some browsers (notably desktop Chromium/Edge).
+      // Exponentially-decaying noise = diffuse reverb tail. A one-pole
+      // low-pass shapes the brightness; a strong one keeps it a dark, soft
+      // wash rather than bright hiss that can sum into a harsh buzz.
       const env   = Math.pow(1 - i / len, decay);
       const white = Math.random() * 2 - 1;
-      lp = lp * 0.6 + white * 0.4;
+      lp = lp * lpCoef + white * (1 - lpCoef);
       d[i] = lp * env;
     }
     // A handful of discrete early reflections gives the space its "size"
     [0.013, 0.027, 0.041, 0.059, 0.083].forEach((rt, k) => {
       const idx = Math.floor(rt * rate);
       if (idx < len) d[idx] += (0.7 - k * 0.11) * (ch === 0 ? 1 : -1);
+    });
+  }
+  return ir;
+}
+
+// Car park: a tight, hard concrete slap - a few strong discrete reflections
+// at short delays with almost no tail. Distinctly different from a smooth hall.
+function makeSlapIR() {
+  const c = ctx(), rate = c.sampleRate, len = Math.floor(rate * 0.5);
+  const ir = c.createBuffer(2, len, rate);
+  const taps = [[0.02, 0.72], [0.045, 0.55], [0.08, 0.4], [0.13, 0.28], [0.2, 0.18], [0.3, 0.1]];
+  const burst = Math.floor(rate * 0.006);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = ir.getChannelData(ch);
+    taps.forEach(([rt, amp]) => {
+      const idx = Math.floor(rt * rate) + (ch ? Math.floor(rate * 0.002) : 0);
+      for (let j = 0; j < burst && idx + j < len; j++) {
+        d[idx + j] += (Math.random() * 2 - 1) * amp * (1 - j / burst);
+      }
     });
   }
   return ir;
@@ -510,7 +557,7 @@ function calcSpatialCutoff(relDeg, distance) {
   let   t   = (1 - Math.cos(rad)) / 2;         // 0 = front, 1 = back
   t = Math.pow(t, 0.6);                        // bias so the side/rear muffles sooner
   let cutoff = 19000 - 18400 * t;              // 19000 Hz front → 600 Hz behind
-  if (currentEnv === 'outdoor' && distance != null) {
+  if (OUTDOOR_ENVS.has(currentEnv) && distance != null) {
     // Open-air air-absorption: with no walls to reinforce them, the highs
     // of distant sounds are swallowed, so far zombies go dull and "across
     // the field". Indoors the room fills in those highs, so we skip this.
@@ -528,10 +575,9 @@ function calcReverbSend(relDeg, distance) {
   const distT = Math.max(0, Math.min(1, (distance - 1.5) / 15)); // 0 near → 1 far
   const rad   = (relDeg * Math.PI) / 180;
   const rearT = (1 - Math.cos(rad)) / 2;
-  // Outdoors there is far less reflected sound, so the send is much lower -
-  // just enough to place the sparse distant slap-backs.
-  if (currentEnv === 'outdoor') return 0.5 * distT + 0.1 * rearT;
-  return 1.4 * distT + 0.3 * rearT;
+  // Each environment is wetter or drier - scale the base send by its space.
+  const m = SEND_MULT[currentEnv] != null ? SEND_MULT[currentEnv] : 1.0;
+  return (1.4 * distT + 0.3 * rearT) * m;
 }
 
 // dirGain combines rear attenuation and close-proximity boost.
@@ -725,9 +771,9 @@ function playBossBodyHit() {
 }
 
 function enterBossLevel() {
-  round = 5; killsThisRound = 0; bossSpawned = false;
-  applyEnvironment(round);   // back indoors for the boss
-  playAnnouncement('annLevel5', () => {
+  round = BOSS_LEVEL; killsThisRound = 0; bossSpawned = false;
+  applyEnvironment(round);   // the cavern, for the boss
+  playAnnouncement('annLevel' + BOSS_LEVEL, () => {
     for (let i = 0; i < 5; i++)
       setTimeout(() => { if (gameRunning) spawnZombie(); }, i * 700);
   });
@@ -862,27 +908,45 @@ function playAnnouncement(key, onDone) {
 }
 
 // ── Ambient fixed-position sounds ─────────────────────────────
-// Three anchors at fixed world angles help the player calibrate orientation.
-// Indoor anchors (industrial interior) vs outdoor anchors (ruined street).
-const INDOOR_AMBIENT = [
-  { angle: 60,  label: 'beep',  type: 'beep' },
-  { angle: 200, label: 'drip',  type: 'drip' },
-  { angle: 330, label: 'hum',   type: 'hum'  },
-  { angle: 140, label: 'fan',   type: 'fan', dist: 15 },
-];
-const OUTDOOR_AMBIENT = [
-  { angle: 70,  label: 'alarm', type: 'alarm',   dist: 11 },
-  { angle: 250, label: 'dog',   type: 'dogbark', dist: 11 },
-  { angle: 0,   label: 'wind',  type: 'wind' },   // omnidirectional, no panner
-];
-function currentAmbientSet() { return currentEnv === 'outdoor' ? OUTDOOR_AMBIENT : INDOOR_AMBIENT; }
+// Each environment has its own anchors at fixed world angles, which also
+// help the player calibrate orientation. Omni types (beds with no point in
+// space - wind, rain, crickets) go straight to the master bus, no panner.
+const OMNI_TYPES = new Set(['wind', 'rainbed', 'crickets']);
+const ENV_AMBIENT = {
+  street:    [ { angle: 70,  type: 'alarm',   dist: 11 },
+               { angle: 250, type: 'dogbark', dist: 11 },
+               { type: 'wind' } ],
+  carpark:   [ { angle: 60,  type: 'alarm',   dist: 10 },
+               { angle: 210, type: 'drip',    dist: 8  },
+               { angle: 320, type: 'buzz',    dist: 7  } ],
+  hospital:  [ { angle: 50,  type: 'monitor', dist: 7  },
+               { angle: 185, type: 'buzz',    dist: 6  },
+               { angle: 300, type: 'gurney',  dist: 9  } ],
+  subway:    [ { angle: 80,  type: 'train',   dist: 12 },
+               { angle: 330, type: 'hum',     dist: 8  },
+               { angle: 200, type: 'drip',    dist: 9  } ],
+  forest:    [ { type: 'crickets' },
+               { angle: 120, type: 'owl',     dist: 10 },
+               { angle: 300, type: 'wolf',    dist: 18 },
+               { type: 'wind' } ],
+  cathedral: [ { angle: 90,  type: 'bell',    dist: 13 },
+               { type: 'wind' },
+               { angle: 200, type: 'drip',    dist: 10 } ],
+  rain:      [ { type: 'rainbed' },
+               { angle: 60,  type: 'rainmetal', dist: 6 } ],
+  cavern:    [ { angle: 60,  type: 'beep' },
+               { angle: 200, type: 'drip' },
+               { angle: 330, type: 'hum'  },
+               { angle: 140, type: 'fan', dist: 15 } ],
+};
+function currentAmbientSet() { return ENV_AMBIENT[currentEnv] || ENV_AMBIENT.cavern; }
 let ambientNodes = [];
 
 function startAmbient() {
   currentAmbientSet().forEach(src => {
-    // Wind is an omnidirectional bed - it has no point in space, so no panner.
+    // Omni beds have no point in space, so no panner.
     let panner = null;
-    if (src.type !== 'wind') {
+    if (!OMNI_TYPES.has(src.type)) {
       panner = createPanner();
       const relDeg = ((src.angle - playerHeading) + 360) % 360;
       setPannerPos(panner, relDeg, src.dist || 8);
@@ -1074,6 +1138,149 @@ function startAmbient() {
       noise.connect(lp); lp.connect(g); g.connect(dest());
       noise.start(); lfo.start();
       ambientNodes.push({ panner: null, worldAngle: null, nodes: [noise, lp, g, lfo, lg] });
+
+    } else if (src.type === 'buzz') {
+      // Fluorescent tube buzz with an occasional flicker (car park, hospital).
+      const c = ctx();
+      const osc = c.createOscillator(); osc.type = 'sawtooth'; osc.frequency.value = 120;
+      const bp  = c.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1000; bp.Q.value = 3;
+      const g   = c.createGain(); g.gain.value = 0.10;
+      osc.connect(bp); bp.connect(g); g.connect(panner); osc.start();
+      const node = { panner, worldAngle: src.angle, nodes: [osc, bp, g], timer: null };
+      function flick() {
+        if (!gameRunning) return;
+        const t = c.currentTime;
+        g.gain.setValueAtTime(0.015, t);
+        g.gain.setValueAtTime(0.10, t + 0.03 + Math.random() * 0.07);
+        node.timer = setTimeout(flick, 1800 + Math.random() * 4500);
+      }
+      ambientNodes.push(node); node.timer = setTimeout(flick, 1200);
+
+    } else if (src.type === 'monitor') {
+      // Flatlined heart monitor: a steady, dread-laden continuous tone.
+      const c = ctx();
+      const osc = c.createOscillator(); osc.type = 'sine'; osc.frequency.value = 1000;
+      const g   = c.createGain(); g.gain.value = 0.09;
+      osc.connect(g); g.connect(panner); osc.start();
+      ambientNodes.push({ panner, worldAngle: src.angle, nodes: [osc, g] });
+
+    } else if (src.type === 'gurney') {
+      // A squeaky gurney/trolley wheel rolling somewhere down the corridor.
+      const c = ctx();
+      const g = c.createGain(); g.gain.value = 0.4; g.connect(panner);
+      const node = { panner, worldAngle: src.angle, nodes: [g], timer: null };
+      function squeak() {
+        if (!gameRunning) return;
+        const t0 = c.currentTime;
+        const o  = c.createOscillator(); o.type = 'sawtooth';
+        o.frequency.setValueAtTime(700, t0);
+        o.frequency.linearRampToValueAtTime(1150, t0 + 0.12);
+        o.frequency.linearRampToValueAtTime(680, t0 + 0.26);
+        const bp = c.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1500; bp.Q.value = 7;
+        const eg = c.createGain();
+        eg.gain.setValueAtTime(0.0001, t0);
+        eg.gain.exponentialRampToValueAtTime(1, t0 + 0.05);
+        eg.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.3);
+        o.connect(bp); bp.connect(eg); eg.connect(g); o.start(t0); o.stop(t0 + 0.32);
+        node.timer = setTimeout(squeak, 1400 + Math.random() * 2000);
+      }
+      ambientNodes.push(node); node.timer = setTimeout(squeak, 1300);
+
+    } else if (src.type === 'train') {
+      // Subway ambience (real recording, looped) - tube rumble, passing trains.
+      const c = ctx();
+      const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3200; lp.Q.value = 0.5;
+      const g  = c.createGain(); g.gain.value = 0.7;
+      lp.connect(g); g.connect(panner);
+      if (audioBuffers.subwayTrain) {
+        const s = c.createBufferSource(); s.buffer = audioBuffers.subwayTrain; s.loop = true;
+        s.connect(lp); s.start();
+        ambientNodes.push({ panner, worldAngle: src.angle, nodes: [s, lp, g] });
+      } else {
+        const o = c.createOscillator(); o.type = 'sawtooth'; o.frequency.value = 55;
+        g.gain.value = 0.12; o.connect(lp); o.start();
+        ambientNodes.push({ panner, worldAngle: src.angle, nodes: [o, lp, g] });
+      }
+
+    } else if (src.type === 'crickets') {
+      // Forest night crickets bed (real recording, looped, omnidirectional).
+      const c = ctx();
+      const g = c.createGain(); g.gain.value = 0.12; g.connect(dest());
+      if (audioBuffers.forestCrickets) {
+        const s = c.createBufferSource(); s.buffer = audioBuffers.forestCrickets; s.loop = true;
+        s.connect(g); s.start();
+        ambientNodes.push({ panner: null, worldAngle: null, nodes: [s, g] });
+      } else {
+        ambientNodes.push({ panner: null, worldAngle: null, nodes: [g] });
+      }
+
+    } else if (src.type === 'owl') {
+      // Periodic owl hoot (real recording).
+      const c = ctx();
+      const g = c.createGain(); g.gain.value = 1.8; g.connect(panner);
+      const node = { panner, worldAngle: src.angle, nodes: [g], timer: null };
+      function hoot() {
+        if (!gameRunning) return;
+        if (audioBuffers.forestOwl) {
+          const s = c.createBufferSource(); s.buffer = audioBuffers.forestOwl; s.connect(g); s.start();
+        }
+        node.timer = setTimeout(hoot, 9000 + Math.random() * 9000);
+      }
+      ambientNodes.push(node); node.timer = setTimeout(hoot, 3000 + Math.random() * 4000);
+
+    } else if (src.type === 'wolf') {
+      // Rare distant wolf howl (real recording; it is hot, so low gain + far).
+      const c = ctx();
+      const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2000; lp.Q.value = 0.5;
+      const g  = c.createGain(); g.gain.value = 0.55; lp.connect(g); g.connect(panner);
+      const node = { panner, worldAngle: src.angle, nodes: [lp, g], timer: null };
+      function howl() {
+        if (!gameRunning) return;
+        if (audioBuffers.forestWolf) {
+          const s = c.createBufferSource(); s.buffer = audioBuffers.forestWolf; s.connect(lp); s.start();
+        }
+        node.timer = setTimeout(howl, 18000 + Math.random() * 20000);
+      }
+      ambientNodes.push(node); node.timer = setTimeout(howl, 8000 + Math.random() * 8000);
+
+    } else if (src.type === 'bell') {
+      // Distant cathedral bell (real recording, looped low).
+      const c = ctx();
+      const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2600; lp.Q.value = 0.5;
+      const g  = c.createGain(); g.gain.value = 3.0; lp.connect(g); g.connect(panner);
+      if (audioBuffers.churchBell) {
+        const s = c.createBufferSource(); s.buffer = audioBuffers.churchBell; s.loop = true;
+        s.connect(lp); s.start();
+        ambientNodes.push({ panner, worldAngle: src.angle, nodes: [s, lp, g] });
+      } else {
+        ambientNodes.push({ panner, worldAngle: src.angle, nodes: [lp, g] });
+      }
+
+    } else if (src.type === 'rainbed') {
+      // Soft rain bed (real recording, looped, omnidirectional).
+      const c = ctx();
+      const g = c.createGain(); g.gain.value = 0.6; g.connect(dest());
+      if (audioBuffers.rainBed) {
+        const s = c.createBufferSource(); s.buffer = audioBuffers.rainBed; s.loop = true;
+        s.connect(g); s.start();
+        ambientNodes.push({ panner: null, worldAngle: null, nodes: [s, g] });
+      } else {
+        ambientNodes.push({ panner: null, worldAngle: null, nodes: [g] });
+      }
+
+    } else if (src.type === 'rainmetal') {
+      // Rain landing on a nearby car roof (real recording, looped). Quiet
+      // source, so it is lifted; low-passed a touch to sit in the rain.
+      const c = ctx();
+      const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 6000; lp.Q.value = 0.4;
+      const g  = c.createGain(); g.gain.value = 8.0; lp.connect(g); g.connect(panner);
+      if (audioBuffers.rainMetal) {
+        const s = c.createBufferSource(); s.buffer = audioBuffers.rainMetal; s.loop = true;
+        s.connect(lp); s.start();
+        ambientNodes.push({ panner, worldAngle: src.angle, nodes: [s, lp, g] });
+      } else {
+        ambientNodes.push({ panner, worldAngle: src.angle, nodes: [lp, g] });
+      }
     }
   });
 }
@@ -1128,22 +1335,21 @@ const MAX_AMMO    = 6;
 const HIT_DEG     = 20;   // aim width AND lock-on zone (kept in sync - task 7)
 const TARGET_DIST = 16;   // targeting only active within this distance
 
-// Rounds 1-3: 1/2/3 zombies. Round 4: 4 at once. Round 5 (boss): 5 + boss.
-function maxZombiesForRound(r) {
-  if (r >= 5) return 5;
-  if (r === 4) return 4;
-  return Math.min(r, 3);
-}
+// 8 levels. Zombies at once: L1-2 one, L3-4 two, L5-6 three, L7 four,
+// L8 (boss) five.
+const ZOMBIES_AT_ONCE = { 1: 1, 2: 1, 3: 2, 4: 2, 5: 3, 6: 3, 7: 4, 8: 5 };
+function maxZombiesForRound(r) { return ZOMBIES_AT_ONCE[r] || 5; }
 
-// Zombies advance slower in the crowded later levels (4 & boss) so they
-// are survivable. Returns the per-tick distance step.
-function advanceSpeedForRound(r) { return r >= 4 ? 0.1296 : 0.1728; }
-
-// Kills required to clear each level. Level 5 (boss): 15 with the boss
-// arriving once 12 zombies are down.
-const KILLS_NEEDED = { 1: 5, 2: 10, 3: 10, 4: 15, 5: 15 };
-const BOSS_ENTERS_AFTER = 12;
+// Kills needed to clear each level.
+const KILLS_NEEDED = { 1: 3, 2: 5, 3: 5, 4: 8, 5: 8, 6: 10, 7: 10, 8: 15 };
 function killsNeededForRound(r) { return KILLS_NEEDED[r] || 10; }
+
+const BOSS_LEVEL = 8;
+const BOSS_ENTERS_AFTER = 12;   // boss enters level 8 once 12 zombies are down
+
+// Zombies advance slower in the crowded later levels (3+ at once) so they
+// stay survivable. Returns the per-tick distance step.
+function advanceSpeedForRound(r) { return r >= 5 ? 0.1296 : 0.1728; }
 
 let playerHeading    = 0;
 let gyroHeading      = 0;
@@ -1377,10 +1583,10 @@ function shoot() {
       showFeedback('Zombie down!');
       removeZombie(t);
 
-      // Boss level (5): regulars keep coming until 12 are down, then the
+      // Boss level (8): regulars keep coming until 12 are down, then the
       // boss enters. Once the boss is out, stop respawning so the player
       // can focus on it; killing the boss is victory.
-      if (round === 5) {
+      if (round === BOSS_LEVEL) {
         if (killsThisRound >= BOSS_ENTERS_AFTER && !bossSpawned) {
           spawnBoss();
         } else if (!bossSpawned) {
@@ -1388,10 +1594,10 @@ function shoot() {
         }
       }
 
-      // Level advancement (levels 1-4)
-      if (round <= 4) {
+      // Level advancement (levels 1-7)
+      if (round < BOSS_LEVEL) {
         const need = killsNeededForRound(round);
-        if (killsThisRound >= need && round === 4) {
+        if (killsThisRound >= need && round === BOSS_LEVEL - 1) {
           enterBossLevel();
         } else if (killsThisRound >= need) {
           round++;
