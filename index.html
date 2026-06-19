@@ -236,7 +236,7 @@ function dest() {
 
 // ── Audio file loading ─────────────────────────────────────────
 const audioBuffers = {};
-const AUDIO_VERSION = 8;   // bump to force browsers to re-fetch updated sound files
+const AUDIO_VERSION = 9;   // bump to force browsers to re-fetch updated sound files
 
 async function loadSounds() {
   const files = {
@@ -258,6 +258,7 @@ async function loadSounds() {
     carAlarm:      'sounds/car_alarm.mp3',     // CC0, kyles (freesound 452177)
     dogBark:       'sounds/dog_bark.mp3',      // CC0, SuperStudioBR (freesound 180977)
     subwayTrain:   'sounds/subway_train.mp3',  // CC0, Syphon64 (freesound 135209)
+    subwayPass:    'sounds/subway_pass.mp3',   // CC0, cinningbao (freesound 365622)
     forestCrickets:'sounds/forest_crickets.mp3', // CC0, 2887679652 (freesound 167304)
     forestOwl:     'sounds/forest_owl.mp3',    // CC0, gfrog (freesound 157870)
     forestWolf:    'sounds/forest_wolf.mp3',   // CC0, kiwisarecool (freesound 203342)
@@ -921,10 +922,12 @@ const ENV_AMBIENT = {
                { angle: 320, type: 'buzz',    dist: 7  } ],
   hospital:  [ { angle: 50,  type: 'monitor', dist: 7  },
                { angle: 185, type: 'buzz',    dist: 6, gain: 0.02 },   // 20% - was flooding the scene
+               { angle: 250, type: 'beep',    dist: 14, gain: 0.09 },  // quieter, intermittent, far - another machine
                { angle: 300, type: 'gurney',  dist: 9  } ],
-  subway:    [ { angle: 80,  type: 'train',   dist: 12 },
-               { angle: 330, type: 'hum',     dist: 8  },
-               { angle: 200, type: 'drip',    dist: 9  } ],
+  subway:    [ { angle: 80,  type: 'train',     dist: 12 },
+               { angle: 330, type: 'hum',       dist: 8  },
+               { angle: 200, type: 'drip',      dist: 9  },
+               { angle: 100, type: 'trainpass', dist: 5  } ],   // a train passes through ~30s in
   forest:    [ { type: 'crickets' },
                { angle: 120, type: 'owl',     dist: 10 },
                { angle: 300, type: 'wolf',    dist: 18 },
@@ -971,7 +974,7 @@ function startAmbient() {
     } else if (src.type === 'beep') {
       // Periodic electronic beep
       const gain = ctx().createGain();
-      gain.gain.value = 0.18;
+      gain.gain.value = src.gain != null ? src.gain : 0.18;
       gain.connect(panner);
       function doBeep() {
         if (!gameRunning) return;
@@ -1203,6 +1206,24 @@ function startAmbient() {
         ambientNodes.push({ panner, worldAngle: src.angle, nodes: [o, lp, g] });
       }
 
+    } else if (src.type === 'trainpass') {
+      // A train roars through the station: a real pass-by recording (mono'd
+      // by the loader, so it pans as a point source), first ~30s into the
+      // scene, then every minute or so. Loud and dramatic vs the tube bed.
+      const c = ctx();
+      const g = c.createGain(); g.gain.value = src.gain != null ? src.gain : 4.0;
+      g.connect(panner);
+      const node = { panner, worldAngle: src.angle, nodes: [g], timer: null };
+      function pass() {
+        if (!gameRunning) return;
+        if (audioBuffers.subwayPass) {
+          const s = c.createBufferSource(); s.buffer = audioBuffers.subwayPass; s.connect(g); s.start();
+        }
+        node.timer = setTimeout(pass, 50000 + Math.random() * 25000);
+      }
+      ambientNodes.push(node);
+      node.timer = setTimeout(pass, 30000);   // first pass ~30s into the scene
+
     } else if (src.type === 'crickets') {
       // Forest night crickets bed (real recording, looped, omnidirectional).
       const c = ctx();
@@ -1248,7 +1269,7 @@ function startAmbient() {
       // Distant cathedral bell (real recording, looped low).
       const c = ctx();
       const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2600; lp.Q.value = 0.5;
-      const g  = c.createGain(); g.gain.value = 3.0; lp.connect(g); g.connect(panner);
+      const g  = c.createGain(); g.gain.value = 3.9; lp.connect(g); g.connect(panner);  // +30%
       if (audioBuffers.churchBell) {
         const s = c.createBufferSource(); s.buffer = audioBuffers.churchBell; s.loop = true;
         s.connect(lp); s.start();
