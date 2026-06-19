@@ -487,10 +487,30 @@ function updateZombieAudio(z, relDeg) {
 }
 
 // ── Sound: gunshot ─────────────────────────────────────────────
+// How much the gun rings out in the current space. Centred (the gun is at
+// the player), but the tail reflects the scene - a shot in the cathedral
+// echoes, in the forest it is almost dry.
+function gunReverbSend() {
+  const wet = (SEND_MULT[currentEnv] != null ? SEND_MULT[currentEnv] : 1.0) * 0.7;
+  const send = ctx().createGain();
+  send.gain.value = wet;
+  send.connect(getReverb());
+  return send;
+}
+
 function playGunshot() {
-  if (playBuffer('gunshot', null, 5.0)) return;
+  const c = ctx();
+  if (audioBuffers.gunshot) {
+    const src  = c.createBufferSource();
+    src.buffer = audioBuffers.gunshot;
+    const gain = c.createGain(); gain.gain.value = 5.0;
+    src.connect(gain); gain.connect(dest());
+    const send = gunReverbSend(); src.connect(send);   // pre-gain tap, scene reverb
+    src.onended = () => { try { gain.disconnect(); send.disconnect(); } catch (e) {} };
+    src.start();
+    return;
+  }
   // Synthesised fallback
-  const c   = ctx();
   const buf = c.createBuffer(1, c.sampleRate * 0.15, c.sampleRate);
   const d   = buf.getChannelData(0);
   for (let i = 0; i < d.length; i++) {
@@ -508,6 +528,7 @@ function playGunshot() {
   src.connect(filt);
   filt.connect(gain);
   gain.connect(dest());
+  const send = gunReverbSend(); filt.connect(send);    // scene reverb on the fallback too
   src.start();
 }
 
@@ -833,7 +854,7 @@ function playHitThud() {
 // Play a one-shot buffer with the full scene acoustics: positioned by a
 // fresh panner (dry path) AND fed into the environment reverb (wet path),
 // at the given direction/distance. Nodes are cleaned up when it finishes.
-function playSpatial(buffer, relDeg, panDist, vol, rate, sendDist) {
+function playSpatial(buffer, relDeg, panDist, vol, rate, sendDist, wetVol) {
   if (!buffer) return;
   const c = ctx();
   const src = c.createBufferSource();
@@ -843,9 +864,14 @@ function playSpatial(buffer, relDeg, panDist, vol, rate, sendDist) {
   const panner = createPanner();                 // dry -> master (panDist sets direction + its own rolloff)
   setPannerPos(panner, relDeg, panDist);
   const send = c.createGain();                   // wet -> shared reverb (wetness tracks true distance)
-  send.gain.value = calcReverbSend(relDeg, sendDist != null ? sendDist : panDist);
+  // CRITICAL: the wet send is tapped PRE-gain and uses its own level, so a
+  // very loud dry sound (e.g. a thud at vol 11) does not dump a huge signal
+  // into the shared reverb and drench the whole scene. Defaults to vol when
+  // wetVol is omitted (so the death cry behaves exactly as before).
+  send.gain.value = calcReverbSend(relDeg, sendDist != null ? sendDist : panDist) * (wetVol != null ? wetVol : vol);
   send.connect(getReverb());
-  src.connect(gain); gain.connect(panner); gain.connect(send);
+  src.connect(gain); gain.connect(panner);
+  src.connect(send);
   src.onended = () => { try { panner.disconnect(); send.disconnect(); gain.disconnect(); } catch (e) {} };
   src.start();
 }
@@ -870,7 +896,9 @@ function playBodyHit(relDeg, distance) {
   // Reverb send still uses the true distance so wetness reads correctly.
   const panDist = Math.min(distance, 8);
   const gentle  = 1.0 - 0.35 * Math.max(0, Math.min(1, (distance - 2) / 14)); // 1.0 near → 0.65 far
-  playSpatial(audioBuffers[key], relDeg, panDist, 11.0 * gentle * fileVol, rate, distance);
+  // Loud dry thud, but a MODEST wet level (~a normal sound), decoupled from the
+  // dry gain so the reverb does not blow up in the wet scenes.
+  playSpatial(audioBuffers[key], relDeg, panDist, 11.0 * gentle * fileVol, rate, distance, 2.2 * fileVol);
 }
 
 function playDeath(relDeg, pitch, distance, isBoss) {
