@@ -830,44 +830,51 @@ function playHitThud() {
 }
 
 // ── Sound: zombie death ────────────────────────────────────────
-function playBodyHit(distance) {
+// Play a one-shot buffer with the full scene acoustics: positioned by a
+// fresh panner (dry path) AND fed into the environment reverb (wet path),
+// at the given direction/distance. Nodes are cleaned up when it finishes.
+function playSpatial(buffer, relDeg, distance, vol, rate) {
+  if (!buffer) return;
+  const c = ctx();
+  const src = c.createBufferSource();
+  src.buffer = buffer;
+  if (rate) src.playbackRate.value = rate;
+  const gain = c.createGain(); gain.gain.value = vol;
+  const panner = createPanner();                 // dry -> master
+  setPannerPos(panner, relDeg, distance);
+  const send = c.createGain();                   // wet -> shared reverb
+  send.gain.value = calcReverbSend(relDeg, distance);
+  send.connect(getReverb());
+  src.connect(gain); gain.connect(panner); gain.connect(send);
+  src.onended = () => { try { panner.disconnect(); send.disconnect(); gain.disconnect(); } catch (e) {} };
+  src.start();
+}
+
+function playBodyHit(relDeg, distance) {
   const candidates = ['bodyHitA', 'bodyHitB', 'bodyHitC'].filter(k => audioBuffers[k]);
   if (!candidates.length) return;
   const key = candidates[Math.floor(Math.random() * candidates.length)];
-  const c   = ctx();
-  const src = c.createBufferSource();
-  src.buffer = audioBuffers[key];
   // Distinct playback rate per file so the three sounds are clearly different
-  src.playbackRate.value = key === 'bodyHitA' ? 1.0
-                         : key === 'bodyHitB' ? 0.82
-                         :                     1.18;
-  const gain = c.createGain();
-  // Close (distance ~2) = full volume; far (distance ~18) = much quieter; no floor
+  const rate = key === 'bodyHitA' ? 1.0
+             : key === 'bodyHitB' ? 0.82
+             :                     1.18;
+  // Close (distance ~2) = full volume; far = much quieter; no floor.
   const distVol = Math.min(1, 2.5 / Math.max(distance, 1));
   // Per-file level: A and B are inherently much louder than C, so pull them
   // down to roughly C's level rather than blasting on a distant kill.
   const fileVol = key === 'bodyHitA' ? 0.3
                 : key === 'bodyHitB' ? 0.45
                 :                      1.0;   // C is already quiet
-  gain.gain.value = 2.5 * distVol * fileVol;
-  src.connect(gain);
-  gain.connect(dest());
-  src.start();
+  // Positioned + reverberated by the scene, like everything else.
+  playSpatial(audioBuffers[key], relDeg, distance, 2.5 * distVol * fileVol, rate);
 }
 
-function playDeath(panner, pitch, distance, isBoss) {
-  // Zombie death cry through the spatial panner
+function playDeath(relDeg, pitch, distance, isBoss) {
+  // Zombie death cry, positioned + reverberated by the scene
   if (audioBuffers.zombieDeath) {
-    const src  = ctx().createBufferSource();
-    src.buffer = audioBuffers.zombieDeath;
-    src.playbackRate.value = pitchToRate(pitch);
-    const gain = ctx().createGain();
-    gain.gain.value = 1.5;
-    src.connect(gain);
-    gain.connect(panner);
-    src.start();
+    playSpatial(audioBuffers.zombieDeath, relDeg, distance, 1.5, pitchToRate(pitch));
   } else {
-    // Synthesised fallback
+    // Synthesised fallback, routed through a fresh panner (dry) + reverb send (wet)
     const c   = ctx();
     const osc = c.createOscillator();
     osc.type  = 'sawtooth';
@@ -878,13 +885,16 @@ function playDeath(panner, pitch, distance, isBoss) {
     const gain = c.createGain();
     gain.gain.setValueAtTime(1.8,  c.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.01, c.currentTime + 1.0);
-    osc.connect(dist); dist.connect(gain); gain.connect(panner);
+    const panner = createPanner(); setPannerPos(panner, relDeg, distance);
+    const send = c.createGain(); send.gain.value = calcReverbSend(relDeg, distance); send.connect(getReverb());
+    osc.connect(dist); dist.connect(gain); gain.connect(panner); gain.connect(send);
     osc.start(); osc.stop(c.currentTime + 1.05);
+    osc.onended = () => { try { panner.disconnect(); send.disconnect(); } catch (e) {} };
   }
   if (isBoss) {
     setTimeout(playBossBodyHit, 500);
   } else {
-    setTimeout(() => playBodyHit(distance || 5), 400);
+    setTimeout(() => playBodyHit(relDeg, distance || 5), 400);
   }
 }
 
@@ -1605,7 +1615,7 @@ function shoot() {
   if (t) {
     t.hp--;
     if (t.hp <= 0) {
-      playDeath(t.panner, t.pitch, t.distance, t.isBoss);
+      playDeath(((t.angle - playerHeading) + 360) % 360, t.pitch, t.distance, t.isBoss);
       score++;
       killsThisRound++;
 
