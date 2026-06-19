@@ -175,7 +175,7 @@
     Double-tap to reload, triple-tap to exit<br>
     Keyboard: arrow keys turn, space shoots, Escape exits
   </p>
-  <p class="sr-only">Turn off VoiceOver on entering the game.</p>
+  <p class="sr-only">Turn off your screen reader on entering the game.</p>
 </div>
 
 <!-- ── Game screen ── -->
@@ -367,15 +367,15 @@ const REVERB_PROFILES = {
   street:    () => ({ buf: makeOutdoorIR(),                      gain: 0.34 }),
   rain:      () => ({ buf: makeOutdoorIR(),                      gain: 0.30 }),
   forest:    () => ({ buf: makeImpulseResponse(0.35, 4.0, 0.7),  gain: 0.10 }), // near-dry
-  carpark:   () => ({ buf: makeSlapIR(),                         gain: 0.45 }), // hard slap
-  hospital:  () => ({ buf: makeImpulseResponse(1.2,  2.6, 0.35), gain: 0.42 }), // bright tile
+  carpark:   () => ({ buf: makeSlapIR(),                         gain: 0.6  }), // slap + concrete tail
+  hospital:  () => ({ buf: makeImpulseResponse(1.3,  2.3, 0.2),  gain: 0.46 }), // bright, hard tile
   subway:    () => ({ buf: makeImpulseResponse(3.2,  1.9, 0.5),  gain: 0.52 }), // big hall
   cathedral: () => ({ buf: makeImpulseResponse(4.2,  1.6, 0.5),  gain: 0.62 }), // huge, smooth
   cavern:    () => ({ buf: makeImpulseResponse(2.6,  2.3, 0.6),  gain: 0.6  }), // dark, medium
 };
 // How wet each space is (multiplies the per-zombie reverb send).
 const SEND_MULT = {
-  street: 0.4, rain: 0.4, forest: 0.15, carpark: 0.7,
+  street: 0.4, rain: 0.4, forest: 0.15, carpark: 0.9,
   hospital: 0.7, subway: 1.1, cathedral: 1.25, cavern: 1.0,
 };
 
@@ -450,21 +450,30 @@ function makeImpulseResponse(seconds, decay, lpCoef) {
   return ir;
 }
 
-// Car park: a tight, hard concrete slap - a few strong discrete reflections
-// at short delays with almost no tail. Distinctly different from a smooth hall.
+// Car park: a hard concrete slap (discrete early reflections) PLUS a short
+// diffuse reverberant tail so the space has body instead of sounding flat.
 function makeSlapIR() {
-  const c = ctx(), rate = c.sampleRate, len = Math.floor(rate * 0.5);
+  const c = ctx(), rate = c.sampleRate, len = Math.floor(rate * 0.75);
   const ir = c.createBuffer(2, len, rate);
   const taps = [[0.02, 0.72], [0.045, 0.55], [0.08, 0.4], [0.13, 0.28], [0.2, 0.18], [0.3, 0.1]];
   const burst = Math.floor(rate * 0.006);
   for (let ch = 0; ch < 2; ch++) {
     const d = ir.getChannelData(ch);
+    // discrete concrete slap-back reflections
     taps.forEach(([rt, amp]) => {
       const idx = Math.floor(rt * rate) + (ch ? Math.floor(rate * 0.002) : 0);
       for (let j = 0; j < burst && idx + j < len; j++) {
         d[idx + j] += (Math.random() * 2 - 1) * amp * (1 - j / burst);
       }
     });
+    // diffuse decaying tail for body - fairly bright (hard concrete surfaces)
+    let lp = 0;
+    for (let i = 0; i < len; i++) {
+      const env = Math.pow(1 - i / len, 2.4);
+      const white = Math.random() * 2 - 1;
+      lp = lp * 0.4 + white * 0.6;
+      d[i] += lp * env * 0.3;
+    }
   }
   return ir;
 }
@@ -1806,7 +1815,7 @@ function onStartPressed() {
   const voEl = document.getElementById('vo-alert');
   voEl.textContent = '';
   requestAnimationFrame(() => {
-    requestAnimationFrame(() => { voEl.textContent = 'Turn off VoiceOver now'; });
+    requestAnimationFrame(() => { voEl.textContent = 'Turn off your screen reader now'; });
   });
 
   // 4. Switch screens immediately.
