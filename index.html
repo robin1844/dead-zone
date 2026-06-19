@@ -236,7 +236,7 @@ function dest() {
 
 // ── Audio file loading ─────────────────────────────────────────
 const audioBuffers = {};
-const AUDIO_VERSION = 9;   // bump to force browsers to re-fetch updated sound files
+const AUDIO_VERSION = 10;  // bump to force browsers to re-fetch updated sound files
 
 async function loadSounds() {
   const files = {
@@ -353,7 +353,7 @@ function setPannerPos(panner, relDeg, distance) {
 // of ambient anchors. environmentForRound() maps a level to its name.
 const LEVEL_ENVIRONMENT = {
   1: 'street', 2: 'carpark', 3: 'hospital', 4: 'subway',
-  5: 'forest', 6: 'cathedral', 7: 'rain', 8: 'cavern',
+  5: 'rain', 6: 'cathedral', 7: 'forest', 8: 'cavern',
 };
 let currentEnv = 'street';
 function environmentForRound(r) { return LEVEL_ENVIRONMENT[r] || 'cavern'; }
@@ -922,7 +922,7 @@ const ENV_AMBIENT = {
                { angle: 320, type: 'buzz',    dist: 7  } ],
   hospital:  [ { angle: 50,  type: 'monitor', dist: 7  },
                { angle: 185, type: 'buzz',    dist: 6, gain: 0.02 },   // 20% - was flooding the scene
-               { angle: 250, type: 'beep',    dist: 14, gain: 0.09 },  // quieter, intermittent, far - another machine
+               { angle: 250, type: 'beep',    dist: 9, gain: 0.28 },   // quieter, intermittent - another machine
                { angle: 300, type: 'gurney',  dist: 9  } ],
   subway:    [ { angle: 80,  type: 'train',     dist: 12 },
                { angle: 330, type: 'hum',       dist: 8  },
@@ -1222,7 +1222,7 @@ function startAmbient() {
         node.timer = setTimeout(pass, 50000 + Math.random() * 25000);
       }
       ambientNodes.push(node);
-      node.timer = setTimeout(pass, 30000);   // first pass ~30s into the scene
+      node.timer = setTimeout(pass, 15000);   // first pass ~15s into the scene
 
     } else if (src.type === 'crickets') {
       // Forest night crickets bed (real recording, looped, omnidirectional).
