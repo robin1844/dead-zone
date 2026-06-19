@@ -236,7 +236,7 @@ function dest() {
 
 // ── Audio file loading ─────────────────────────────────────────
 const audioBuffers = {};
-const AUDIO_VERSION = 11;  // bump to force browsers to re-fetch updated sound files
+const AUDIO_VERSION = 12;  // bump to force browsers to re-fetch updated sound files
 
 async function loadSounds() {
   const files = {
@@ -265,19 +265,19 @@ async function loadSounds() {
     churchBell:    'sounds/church_bell.mp3',   // CC0, mikewest (freesound 411489)
     rainBed:       'sounds/rain_bed.mp3',      // CC0, Talitha5 (freesound 321885)
     rainMetal:     'sounds/rain_metal.mp3',    // CC0, pcpmeltsfaces (freesound 271011)
-    annIntro:     'sounds/ann_intro.wav',
-    annLevel1:    'sounds/ann_level1.wav',
-    annLevel2:    'sounds/ann_level2.wav',
-    annLevel3:    'sounds/ann_level3.wav',
-    annLevel4:    'sounds/ann_level4.wav',
-    annLevel5:    'sounds/ann_level5.wav',
-    annLevel6:    'sounds/ann_level6.wav',
-    annLevel7:    'sounds/ann_level7.wav',
-    annLevel8:    'sounds/ann_level8.wav',
-    annBoss:      'sounds/ann_boss.wav',
-    annGameOver:  'sounds/ann_gameover.wav',
-    annVictory:   'sounds/ann_victory.wav',
-    annExit:      'sounds/ann_exit.wav',
+    annIntro:     'sounds/ann_intro.mp3',
+    annLevel1:    'sounds/ann_level1.mp3',
+    annLevel2:    'sounds/ann_level2.mp3',
+    annLevel3:    'sounds/ann_level3.mp3',
+    annLevel4:    'sounds/ann_level4.mp3',
+    annLevel5:    'sounds/ann_level5.mp3',
+    annLevel6:    'sounds/ann_level6.mp3',
+    annLevel7:    'sounds/ann_level7.mp3',
+    annLevel8:    'sounds/ann_level8.mp3',
+    annBoss:      'sounds/ann_boss.mp3',
+    annGameOver:  'sounds/ann_gameover.mp3',
+    annVictory:   'sounds/ann_victory.mp3',
+    annExit:      'sounds/ann_exit.mp3',
   };
   await Promise.all(Object.entries(files).map(async ([key, path]) => {
     try {
