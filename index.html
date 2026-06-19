@@ -865,8 +865,10 @@ function playBodyHit(relDeg, distance) {
   const fileVol = key === 'bodyHitA' ? 0.3
                 : key === 'bodyHitB' ? 0.45
                 :                      1.0;   // C is already quiet
-  // Positioned + reverberated by the scene, like everything else.
-  playSpatial(audioBuffers[key], relDeg, distance, 2.5 * distVol * fileVol, rate);
+  // Positioned + reverberated by the scene, like everything else. 4x base
+  // level: routing through the panner adds its own distance attenuation, so
+  // the thuds need lifting to be clearly audible again.
+  playSpatial(audioBuffers[key], relDeg, distance, 10.0 * distVol * fileVol, rate);
 }
 
 function playDeath(relDeg, pitch, distance, isBoss) {
