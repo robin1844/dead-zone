@@ -236,7 +236,7 @@ function dest() {
 
 // ── Audio file loading ─────────────────────────────────────────
 const audioBuffers = {};
-const AUDIO_VERSION = 10;  // bump to force browsers to re-fetch updated sound files
+const AUDIO_VERSION = 11;  // bump to force browsers to re-fetch updated sound files
 
 async function loadSounds() {
   const files = {
@@ -1372,13 +1372,11 @@ const ZOMBIES_AT_ONCE = { 1: 1, 2: 1, 3: 2, 4: 2, 5: 3, 6: 3, 7: 4, 8: 5 };
 function maxZombiesForRound(r) { return ZOMBIES_AT_ONCE[r] || 5; }
 
 // Kills needed to clear each level.
-// TEMPORARY (testing): all 3 so every soundscape is quick to reach.
-// Restore to { 1:3, 2:5, 3:5, 4:8, 5:8, 6:10, 7:10, 8:15 }.
-const KILLS_NEEDED = { 1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3, 7: 3, 8: 3 };
+const KILLS_NEEDED = { 1: 3, 2: 5, 3: 5, 4: 8, 5: 8, 6: 10, 7: 10, 8: 15 };
 function killsNeededForRound(r) { return KILLS_NEEDED[r] || 10; }
 
 const BOSS_LEVEL = 8;
-const BOSS_ENTERS_AFTER = 3;    // TEMPORARY (testing): was 12 - boss enters level 8 once N down
+const BOSS_ENTERS_AFTER = 12;   // boss enters level 8 once 12 zombies are down
 
 // Zombies advance slower in the crowded later levels (3+ at once) so they
 // stay survivable. Returns the per-tick distance step.
