@@ -844,7 +844,12 @@ function playBodyHit(distance) {
   const gain = c.createGain();
   // Close (distance ~2) = full volume; far (distance ~18) = much quieter; no floor
   const distVol = Math.min(1, 2.5 / Math.max(distance, 1));
-  gain.gain.value = 2.5 * distVol;
+  // Per-file level: A and B are inherently much louder than C, so pull them
+  // down to roughly C's level rather than blasting on a distant kill.
+  const fileVol = key === 'bodyHitA' ? 0.3
+                : key === 'bodyHitB' ? 0.45
+                :                      1.0;   // C is already quiet
+  gain.gain.value = 2.5 * distVol * fileVol;
   src.connect(gain);
   gain.connect(dest());
   src.start();
