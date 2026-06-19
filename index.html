@@ -833,17 +833,17 @@ function playHitThud() {
 // Play a one-shot buffer with the full scene acoustics: positioned by a
 // fresh panner (dry path) AND fed into the environment reverb (wet path),
 // at the given direction/distance. Nodes are cleaned up when it finishes.
-function playSpatial(buffer, relDeg, distance, vol, rate) {
+function playSpatial(buffer, relDeg, panDist, vol, rate, sendDist) {
   if (!buffer) return;
   const c = ctx();
   const src = c.createBufferSource();
   src.buffer = buffer;
   if (rate) src.playbackRate.value = rate;
   const gain = c.createGain(); gain.gain.value = vol;
-  const panner = createPanner();                 // dry -> master
-  setPannerPos(panner, relDeg, distance);
-  const send = c.createGain();                   // wet -> shared reverb
-  send.gain.value = calcReverbSend(relDeg, distance);
+  const panner = createPanner();                 // dry -> master (panDist sets direction + its own rolloff)
+  setPannerPos(panner, relDeg, panDist);
+  const send = c.createGain();                   // wet -> shared reverb (wetness tracks true distance)
+  send.gain.value = calcReverbSend(relDeg, sendDist != null ? sendDist : panDist);
   send.connect(getReverb());
   src.connect(gain); gain.connect(panner); gain.connect(send);
   src.onended = () => { try { panner.disconnect(); send.disconnect(); gain.disconnect(); } catch (e) {} };
@@ -859,16 +859,18 @@ function playBodyHit(relDeg, distance) {
              : key === 'bodyHitB' ? 0.82
              :                     1.18;
   // Close (distance ~2) = full volume; far = much quieter; no floor.
-  const distVol = Math.min(1, 2.5 / Math.max(distance, 1));
   // Per-file level: A and B are inherently much louder than C, so pull them
   // down to roughly C's level rather than blasting on a distant kill.
   const fileVol = key === 'bodyHitA' ? 0.3
                 : key === 'bodyHitB' ? 0.45
                 :                      1.0;   // C is already quiet
-  // Positioned + reverberated by the scene, like everything else. 4x base
-  // level: routing through the panner adds its own distance attenuation, so
-  // the thuds need lifting to be clearly audible again.
-  playSpatial(audioBuffers[key], relDeg, distance, 10.0 * distVol * fileVol, rate);
+  // Direction from a capped distance so far thuds keep their position but are
+  // NOT crushed by the panner's distance rolloff, plus a GENTLE volume rolloff
+  // (the old steep one, on top of the panner, made distant thuds inaudible).
+  // Reverb send still uses the true distance so wetness reads correctly.
+  const panDist = Math.min(distance, 8);
+  const gentle  = 1.0 - 0.35 * Math.max(0, Math.min(1, (distance - 2) / 14)); // 1.0 near → 0.65 far
+  playSpatial(audioBuffers[key], relDeg, panDist, 11.0 * gentle * fileVol, rate, distance);
 }
 
 function playDeath(relDeg, pitch, distance, isBoss) {
