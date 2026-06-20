@@ -173,7 +173,7 @@
     Turn your phone to face the zombies.<br>
     Tap to shoot, hold for rapid fire<br>
     Double-tap to reload, triple-tap to exit<br>
-    Keyboard: arrow keys turn, space shoots, Escape exits
+    Keyboard: arrow keys turn, space bar to shoot, double press to reload, hold down for rapid fire. Escape exits
   </p>
   <p class="sr-only">Turn off your screen reader on entering the game.</p>
 </div>
@@ -1732,7 +1732,11 @@ function onTouchStart(e) {
   }, HOLD_MS);
 }
 
-function onTouchEnd(e) {
+// allowExit: triple-press-to-exit. True for touch (triple-tap), but the
+// keyboard passes false - space-bar triple-press was exiting people by
+// accident, and Escape already exits.
+function onTouchEnd(e, allowExit) {
+  if (allowExit === undefined) allowExit = true;
   e.preventDefault();
   clearTimeout(holdTimer);
   holdTimer = null;
@@ -1748,11 +1752,12 @@ function onTouchEnd(e) {
   tapCount++;
   clearTimeout(multiTimer);
 
-  if (tapCount >= 3) {
+  if (allowExit && tapCount >= 3) {
     tapCount = 0;
     triggerExit();
     return;
   }
+  if (!allowExit && tapCount > 2) tapCount = 2;   // keyboard: never exit; cap so reload still works
 
   multiTimer = setTimeout(() => {
     const n  = tapCount;
@@ -1797,7 +1802,7 @@ function onKeyDown(e) {
 function onKeyUp(e) {
   if (gameRunning && (e.key === ' ' || e.key === 'Spacebar')) {
     e.preventDefault();
-    onTouchEnd({ preventDefault() {} });
+    onTouchEnd({ preventDefault() {} }, false);   // false: space never exits (Escape does)
   }
 }
 
